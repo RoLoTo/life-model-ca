@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "household": {
+    "spec_version": 1,
+    "meta": {
+      "name": "Synthetic Ontario payroll",
+      "start_year": 2026,
+      "start": "2026-12",
+      "end_year": 2027,
+      "default_state": "DEFAULT",
+      "accepted_warnings": ["cash_not_invested", "no_health_coverage", "zero_growth"]
+    },
+    "people": [
+      {
+        "id": "owner",
+        "name": "Synthetic owner",
+        "age": 59,
+        "birth": "1967-01",
+        "retirement_age": 60,
+        "spending": {"amount_annual": 0, "growth_pct": 0},
+        "accounts": [{"kind": "bank", "balance": 23000, "interest_pct": 0}],
+        "housing": [
+          {
+            "id": "home",
+            "kind": "home",
+            "name": "Synthetic home",
+            "purchase_price": 300000,
+            "value_growth_pct": 0,
+            "down_payment": 271000,
+            "pmi": false,
+            "expenses": {},
+            "mortgage": {"original_amount": 29000, "balance": 29000, "rate_pct": 0, "term_years": 30}
+          }
+        ]
+      }
+    ]
+  },
+  "corporation": "Synthetic Ontario corporation",
+  "corporate_cash": "50000.00",
+  "period_pay": "8000.00",
+  "income_tax_withheld": "1500.00",
+  "ei_insurable": false,
+  "payday": "2026-12-27",
+  "remittance_due": "2027-01-15",
+  "maturity": "2026-12-28",
+  "retirement_opening": "2027-01-01",
+  "eligible_corporate_income_before_pay": "50000.00",
+  "corporate_tax_due": "2027-03-31"
+}

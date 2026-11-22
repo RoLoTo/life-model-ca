@@ -96,6 +96,8 @@ class RunResult:
         monthly_frame: pd.DataFrame | None = None,
         monthly_balance_sheets: pd.DataFrame | None = None,
         monthly_positions: pd.DataFrame | None = None,
+        canadian_tax_returns: list[dict] | None = None,
+        canadian_opening_tax: list[dict] | None = None,
         seed: int | None = None,
         spec: Any | None = None,
         deflators: dict[int, float] | None = None,
@@ -112,6 +114,10 @@ class RunResult:
         self._monthly_frame = monthly_frame
         self._monthly_balance_sheets = monthly_balance_sheets
         self._monthly_positions = monthly_positions
+        #: Canadian tax returns in nominal CAD, in tax-year order.
+        self.canadian_tax_returns = list(canadian_tax_returns or ())
+        #: Opening Canadian tax balances in nominal CAD.
+        self.canadian_opening_tax = list(canadian_opening_tax or ())
         self.seed = seed
         #: The household spec the model was built from (a :class:`~life_model.spec.schema.HouseholdSpec`), when known.
         self.spec = spec
@@ -127,8 +133,13 @@ class RunResult:
         """A result reading ``model`` (frames are built on first use)."""
         from .model import MoneyStat
 
+        policy = getattr(model, "income_tax_policy", None)
+        canadian_returns = getattr(policy, "returns", {})
+        opening_tax = getattr(policy, "opening_balances", {})
         result = cls(
             tax_returns=model.tax_returns,
+            canadian_tax_returns=[canadian_returns[year].to_record() for year in sorted(canadian_returns)],
+            canadian_opening_tax=[entry.to_record() for entry in opening_tax.values()],
             seed=model.initial_seed if model.initial_seed is not None else getattr(model, "_seed", None),
             spec=spec,
             deflators={year: model.economy.cumulative_inflation(year) for year in model.simulated_years},
@@ -354,6 +365,8 @@ class RunResult:
                 self.monthly_balance_sheets, ["opening_net_worth", "closing_net_worth", "inflows", "outflows"], "year"
             ),
             monthly_positions=deflate(self.monthly_positions, ["balance"], "year"),
+            canadian_tax_returns=self.canadian_tax_returns,
+            canadian_opening_tax=self.canadian_opening_tax,
             seed=self.seed,
             spec=self.spec,
             deflators=self.deflators,
@@ -396,6 +409,10 @@ class RunResult:
         }
         if self.monthly_positions is not None:
             meta["has_monthly_positions"] = True
+        if self.canadian_tax_returns:
+            meta["canadian_tax_returns"] = self.canadian_tax_returns
+        if self.canadian_opening_tax:
+            meta["canadian_opening_tax"] = self.canadian_opening_tax
         return meta
 
     @staticmethod
@@ -494,6 +511,8 @@ class RunResult:
             monthly_frame=read("monthly"),
             monthly_balance_sheets=read("monthly_balance_sheets"),
             monthly_positions=read("monthly_positions") if meta.get("has_monthly_positions") else None,
+            canadian_tax_returns=meta.get("canadian_tax_returns"),
+            canadian_opening_tax=meta.get("canadian_opening_tax"),
             seed=meta.get("seed"),
             spec=meta.get("spec"),
             deflators={int(year): factor for year, factor in meta.get("deflators", {}).items()},

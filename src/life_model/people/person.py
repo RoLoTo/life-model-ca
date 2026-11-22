@@ -285,8 +285,12 @@ class Person(LifeModelAgent):
     def savings_policy(self, policy) -> None:
         from ..policies import PolicyRunner
 
-        if policy is not None and policy.sweep_to is not None and policy.sweep_to.person is not self:
-            raise ValueError(f"{self.name} does not own the sweep account")
+        if policy is not None:
+            if policy.sweep_to is not None and policy.sweep_to.person is not self:
+                raise ValueError(f"{self.name} does not own the sweep account")
+            source = policy.source_bank
+            if source is not None and (source not in self.bank_accounts or source.reserve):
+                raise ValueError("The sweep source must be the owner's available bank account")
         self._savings_policy = policy
         if policy is not None:
             PolicyRunner.for_model(self.model).watch(self)
@@ -695,7 +699,7 @@ class Person(LifeModelAgent):
     @property
     def all_tax_advantaged_accounts(self) -> list:
         """All tax-advantaged accounts (HSA, Roth IRA, Traditional IRA) owned by this person."""
-        return [*self.hsas, *self.roth_iras, *self.traditional_iras]
+        return [*self.hsas, *self.roth_iras, *self.traditional_iras, *self.canadian_deferred, *self.tfsas]
 
     def remaining_401k_elective_room(self) -> float:
         """Remaining 402(g) elective-deferral room this year, aggregated across all jobs."""
@@ -997,7 +1001,15 @@ class Person(LifeModelAgent):
         pre-tax 401k/IRA/HSA, Roth 401k and Roth IRA balances."""
         roth_401k = sum(a.roth_balance for a in self.all_retirement_accounts)
         roth_ira = sum(a.balance for a in self.roth_iras)
-        return self.bank_account_balance + self.brokerage_balance + self.pretax_account_balance + roth_401k + roth_ira
+        tfsa = sum(a.balance for a in self.tfsas)
+        return (
+            self.bank_account_balance
+            + self.brokerage_balance
+            + self.pretax_account_balance
+            + roth_401k
+            + roth_ira
+            + tfsa
+        )
 
     @property
     def pretax_account_balance(self) -> float:
@@ -1054,6 +1066,7 @@ class Person(LifeModelAgent):
             (sum(a.pretax_balance for a in accounts), 1.0, retirement_penalty),
             (after_tax, after_tax_earnings / after_tax if after_tax > 0 else 0.0, retirement_penalty),
             (sum(a.balance for a in self.traditional_iras), 1.0 - ira_basis_ratio(self), retirement_penalty),
+            (sum(a.balance for a in self.canadian_deferred), 1.0, 0.0),
             (sum(a.balance for a in self.hsas), 1.0, hsa_penalty),
         ]
 
@@ -1084,6 +1097,8 @@ class Person(LifeModelAgent):
             withdrawn += self.withdraw_from_after_tax_401ks(amount - withdrawn)
         if amount - withdrawn > 0:
             withdrawn += self.withdraw_from_traditional_iras(amount - withdrawn)
+        if amount - withdrawn > 0:
+            withdrawn += self.withdraw_from_canadian_deferred(amount - withdrawn)
         if amount - withdrawn > 0:
             withdrawn += self.withdraw_from_hsas(amount - withdrawn)
         return withdrawn
@@ -1116,6 +1131,35 @@ class Person(LifeModelAgent):
     # non-medical HSA distributions before 65. Roth 401k withdrawals are not penalized here
     # because Roth 401k basis is not tracked.
     # ------------------------------------------------------------------
+
+    @property
+    def canadian_deferred(self):
+        return self.model.registries.canadian_deferred.get_items(self)
+
+    @property
+    def tfsas(self):
+        return self.model.registries.tfsas.get_items(self)
+
+    def withdraw_from_canadian_deferred(self, amount: float) -> float:
+        policy = getattr(self.model, "income_tax_policy", None)
+        if getattr(policy, "estimate_registered_withholding", False):
+            from ..account.canadian import draw_registered_cash_after_withholding
+
+            return draw_registered_cash_after_withholding(self, amount)
+        return self._draw_to_bank(
+            [(account, account.distribute) for account in self.canadian_deferred],
+            amount,
+            FlowKind.WITHDRAWAL,
+            "Canadian registered withdrawal",
+        )
+
+    def withdraw_from_tax_free_accounts(self, amount: float) -> float:
+        return self._draw_to_bank(
+            [(account, account.withdraw) for account in self.tfsas],
+            amount,
+            FlowKind.WITHDRAWAL,
+            "TFSA withdrawal",
+        )
 
     @property
     def traditional_iras(self):

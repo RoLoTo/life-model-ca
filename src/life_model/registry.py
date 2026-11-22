@@ -213,6 +213,8 @@ class ModelRegistries:
         self.hsa_accounts = HSARegistry()
         self.roth_iras = RothIRARegistry()
         self.traditional_iras = TraditionalIRARegistry()
+        self.canadian_deferred = PersonRegistry()
+        self.tfsas = PersonRegistry()
         self.job_401k_accounts = Job401kRegistry()
         self.jobs = JobRegistry()
         self.homes = HomeRegistry()
@@ -247,6 +249,8 @@ class ModelRegistries:
         self.hsa_accounts.clear(owner)
         self.roth_iras.clear(owner)
         self.traditional_iras.clear(owner)
+        self.canadian_deferred.clear(owner)
+        self.tfsas.clear(owner)
         self.job_401k_accounts.clear(owner)
         self.jobs.clear(owner)
         self.homes.clear(owner)
@@ -279,6 +283,8 @@ class ModelRegistries:
             self.hsa_accounts,
             self.roth_iras,
             self.traditional_iras,
+            self.canadian_deferred,
+            self.tfsas,
             self.job_401k_accounts,
             self.jobs,
             self.homes,

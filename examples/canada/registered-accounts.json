@@ -1,0 +1,33 @@
+{
+  "spec_version": 1,
+  "meta": {
+    "name": "Synthetic Canadian registered accounts",
+    "start_year": 2026,
+    "end_year": 2027,
+    "default_state": "DEFAULT",
+    "accepted_warnings": ["cash_not_invested", "no_health_coverage", "zero_growth"],
+    "ontario_retirement_tax": {
+      "province": "ON",
+      "estimate_registered_withholding": true,
+      "settlement_dates": {"2026": "2027-04-30", "2027": "2028-04-30"}
+    }
+  },
+  "withdrawal_order": ["bank", "brokerage", "tax_free", "pretax"],
+  "people": [
+    {
+      "id": "synthetic",
+      "name": "Synthetic resident",
+      "age": 71,
+      "birth": "1955-01",
+      "retirement_age": 65,
+      "spending": {"amount_annual": 7000, "growth_pct": 0},
+      "accounts": [
+        {"kind": "bank", "id": "cash", "balance": 1000, "interest_pct": 0},
+        {"kind": "rrsp", "id": "retirement", "owner_birth": "1955-01-01", "balance": 100000,
+         "convert_at_maturity": true},
+        {"kind": "tfsa", "id": "tfsa", "balance": 10000}
+      ],
+      "tfsa_room": {"available": 0, "annual_limits": {"2027": 7000}}
+    }
+  ]
+}

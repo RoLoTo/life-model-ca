@@ -1,4 +1,4 @@
-# life-model (beta)
+# Life Model Canada
 Python package for performing time step-based simulations of personal finances. Note that this package is still early in development and likely contains bugs. Use at your own risk!
 
 ## Overview
@@ -13,6 +13,14 @@ The package provides comprehensive models of people, jobs, accounts, insurance, 
 ## Motivation
 While impossible to predict the future, the goal of this package is to provide a robust framework for modeling financial outcomes based on various inputs. The best way to use this model is to change one variable at a time and evaluate how it impacts the outcome.
 
+## Ontario scenarios
+
+This fork of [Life Model](https://github.com/sw23/life-model) supports one
+Ontario taxpayer and a wholly owned Canadian-controlled private corporation.
+It uses the Life Model household spec, CLI, dated event schedule and ledger.
+See [Ontario examples and scope](examples/canada/README.md) for the rules it
+covers and synthetic inputs you can run locally.
+
 ## Getting Started
 
 ### Quick Start
@@ -23,8 +31,15 @@ Check out the example simulation notebook:
 ![Training Statistics](https://raw.githubusercontent.com/sw23/life-model/main/img/stats.png)
 
 ### Installation
-```bash
-python -m pip install life-model
+Use Python 3.12 or later and a fresh virtual environment. Install this fork
+from GitHub.
+
+```sh
+git clone https://github.com/RoLoTo/life-model-ca.git
+cd life-model-ca
+python -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/life-model run examples/canada/ontario-projection.json --checks strict --collect month --collect-positions --out /tmp/ontario-projection
 ```
 
 ### Command line
@@ -38,7 +53,7 @@ life-model compare my-models/h.yaml --set 'people[john].retirement_age=58'
 life-model montecarlo my-models/h.yaml --scenario stochastic --n 1000
 ```
 Every command takes `--json` for machine-readable output. The same operations are Python one-liners
-(`life_model.run`, `validate`, `explain`, `compare`), and `pip install 'life-model[mcp]'` adds an MCP
+(`life_model.run`, `validate`, `explain`, `compare`), and `pip install '.[mcp]'` adds an MCP
 server (`life-model mcp`) for Claude Code and other MCP clients. See [docs/cli.md](docs/cli.md) and,
 for the end-to-end workflow, [docs/modeling-a-household.md](docs/modeling-a-household.md). Coding
 agents: start with [AGENTS.md](AGENTS.md).

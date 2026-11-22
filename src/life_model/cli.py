@@ -42,6 +42,13 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, api
+from .account.canadian import RegisteredBalanceShortfall
+from .account.foreign_cash import CashConversionShortfall
+from .account.private_options import OptionExerciseShortfall
+from .canada.corporation import CorporateCashShortfall
+from .debt.bridge import BridgeRepaymentShortfall
+from .housing.closing import ClosingShortfall
+from .housing.home import MortgagePayoffShortfall
 
 EXIT_OK = 0
 EXIT_RUNTIME = 1
@@ -638,6 +645,78 @@ def main(argv: list[str] | None = None) -> int:
     except (api.InputError, FileNotFoundError) as error:
         _emit(as_json, command, {}, "", EXIT_INVALID, str(error))
         return EXIT_INVALID
+    except ClosingShortfall as error:
+        gap = {
+            "amount": str(error.amount),
+            "date": getattr(error, "closing_on", None),
+            "person": getattr(error, "person_id", None),
+        }
+        _emit(as_json, command, {"closing_shortfall": gap}, "", EXIT_RUNTIME, str(error))
+        return EXIT_RUNTIME
+    except MortgagePayoffShortfall as error:
+        gap = {
+            "amount": str(error.amount),
+            "date": error.when,
+            "person": getattr(error, "person_id", None),
+            "home": getattr(error, "home_id", None),
+            "payoff": f"{error.payoff:.2f}",
+            "settled_cash": f"{error.bank_cash:.2f}",
+            "cash_to_keep": f"{error.cash_to_keep:.2f}",
+        }
+        if error.bridge_credit is not None:
+            gap["bridge_credit"] = f"{error.bridge_credit:.2f}"
+        _emit(as_json, command, {"mortgage_payoff_shortfall": gap}, "", EXIT_RUNTIME, str(error))
+        return EXIT_RUNTIME
+    except CorporateCashShortfall as error:
+        gap = {
+            "amount": f"{error.amount:.2f}",
+            "date": error.on,
+            "corporation": error.corporation,
+            "obligation": error.obligation,
+            "currency": "CAD",
+        }
+        _emit(as_json, command, {"corporate_cash_shortfall": gap}, "", EXIT_RUNTIME, str(error))
+        return EXIT_RUNTIME
+    except RegisteredBalanceShortfall as error:
+        gap = {
+            "amount": f"{error.amount:.2f}",
+            "date": error.on,
+            "person": error.person,
+            "account": error.account,
+            "currency": "CAD",
+        }
+        _emit(as_json, command, {"registered_balance_shortfall": gap}, "", EXIT_RUNTIME, str(error))
+        return EXIT_RUNTIME
+    except CashConversionShortfall as error:
+        gap = {
+            "amount": f"{error.amount:.2f}",
+            "date": error.on,
+            "person": getattr(error, "person_id", None),
+            "currency": error.currency,
+        }
+        _emit(as_json, command, {"currency_conversion_shortfall": gap}, "", EXIT_RUNTIME, str(error))
+        return EXIT_RUNTIME
+    except OptionExerciseShortfall as error:
+        gap = {
+            "amount": f"{error.amount:.2f}",
+            "date": error.on,
+            "person": getattr(error, "person_id", None),
+            "exercise": error.event_id,
+        }
+        if error.currency != "CAD":
+            gap["currency"] = error.currency
+        _emit(as_json, command, {"option_exercise_shortfall": gap}, "", EXIT_RUNTIME, str(error))
+        return EXIT_RUNTIME
+    except BridgeRepaymentShortfall as error:
+        gap = {
+            "amount": f"{error.amount:.2f}",
+            "date": error.when,
+            "person": getattr(error, "person_id", None),
+            "bridge": getattr(error, "bridge_id", None),
+            "payoff": f"{error.payoff:.2f}",
+        }
+        _emit(as_json, command, {"bridge_repayment_shortfall": gap}, "", EXIT_RUNTIME, str(error))
+        return EXIT_RUNTIME
     except Exception as error:  # noqa: BLE001 - every other failure is a runtime error (exit 1)
         _emit(as_json, command, {}, "", EXIT_RUNTIME, f"{type(error).__name__}: {error}")
         return EXIT_RUNTIME

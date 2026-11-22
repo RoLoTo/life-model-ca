@@ -301,6 +301,7 @@ class SavingsPolicy:
         source_bank: "BankAccount | None" = None,
         start_year: int | None = None,
         end_year: int | None = None,
+        reserve_ontario_tax: bool = False,
     ):
         """A surplus sweep.
 
@@ -312,6 +313,7 @@ class SavingsPolicy:
             source_bank: The owner's spendable bank account that alone funds the sweep, when supplied.
             start_year: First transfer year, inclusive.
             end_year: Last transfer year, inclusive.
+            reserve_ontario_tax: Also retain the owner's estimated Ontario tax.
         """
         if cash_floor < 0:
             raise ValueError("cash_floor must be non-negative")
@@ -324,6 +326,7 @@ class SavingsPolicy:
         self.source_bank = source_bank
         self.start_year = start_year
         self.end_year = end_year
+        self.reserve_ontario_tax = reserve_ontario_tax
 
     def __repr__(self) -> str:
         target = type(self.sweep_to).__name__ if self.sweep_to is not None else None
@@ -721,6 +724,10 @@ def sweep(person: "Person", policy: SavingsPolicy) -> float:
         raise ValueError("A savings sweep's source must be a spendable bank owned by the person")
     cash = person.usable_bank_balance if bank is None else bank.balance
     surplus = cash - policy.cash_floor
+    if policy.reserve_ontario_tax:
+        from .tax.ontario_policy import cash_reserve_for_owner
+
+        surplus -= float(cash_reserve_for_owner(person))
     if surplus < 1.0:
         return 0.0
     moved = move_from_bank(person, policy.sweep_to, surplus, cause="savings sweep", source_bank=bank)

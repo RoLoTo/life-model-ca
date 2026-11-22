@@ -28,14 +28,14 @@ payment waterfall draws the members' bank accounts in member order.
 
 **Event timing.** `at: {age: A}` resolves through the engine's own `Person.get_year_at_age`
 (`start_year + (A - age)`: a person's `age` is their age during the first simulated year). Events
-fire in the engine's `events` stage, after the year's income and before the tax units settle the
-year, so their effects apply to the year they are dated. An event dated before `start_year` is an
+fire in the engine's `events` stage, after monthly income and before monthly bills. The calendar
+day orders events within the month. Cash reserve releases precede other events on the same day. An event dated before `start_year` is an
 error: put what already happened into the starting state (for example a marriage in
 `relationships`).
 
 ## Event actions
 
-`marry`, `divorce`, `retire`, `change_job`, `move`, `buy_home`, `sell_home`, `one_time_expense`, `recurring_expense`, `change_spending`, `add_account`, `reserve_cash`, `contribute`, `stop_contribution`, `change_contribution`, `convert_to_roth`, `claim_social_security`, `die`, `refinance`, `renew_mortgage`, `pay_mortgage_at_maturity`, `prepay_mortgage`, `heloc_draw`, `draw_bridge`, `repay_bridge`, `disability`.
+`marry`, `divorce`, `retire`, `change_job`, `move`, `buy_home`, `sell_home`, `convert_home_to_ontario_rental`, `record_home_valuation`, `one_time_expense`, `recurring_expense`, `change_spending`, `add_account`, `reserve_cash`, `contribute`, `rrsp_contribute`, `withdraw_registered`, `rrsp_to_rrif`, `ontario_tax_statement`, `corporate_operating_cash`, `corporate_investment_transfer`, `corporate_payroll`, `corporate_pay_dividend`, `corporate_income_tax`, `sell_private_shares`, `exercise_private_options`, `convert_currency`, `move_foreign_cash`, `stop_contribution`, `change_contribution`, `convert_to_roth`, `claim_social_security`, `die`, `refinance`, `renew_mortgage`, `pay_mortgage_at_maturity`, `prepay_mortgage`, `heloc_draw`, `draw_bridge`, `repay_bridge`, `disability`.
 
 ## HouseholdSpec
 
@@ -47,9 +47,10 @@ A complete household: metadata, optional economy overrides, people, relationship
 | `meta` | [Meta](#meta) |  | **required** |  | Run metadata. |
 | `economy` | [Economy](#economy) (optional) |  | — |  | Economy overrides. |
 | `people` | list[[Person](#person)] |  | **required** |  | The people in the household (one family). |
+| `corporations` | list[[CorporationSpec](#corporationspec)] |  | [] |  | Wholly owned Canadian corporations with separate assets and obligations. |
 | `relationships` | [Relationships](#relationships) |  | {} |  | Marriages. |
-| `withdrawal_order` | list[`"bank"` \\| `"fixed_income"` \\| `"brokerage"` \\| `"roth_basis"` \\| `"pretax"` \\| `"roth_earnings"` \\| `"reserve"`] (optional) |  | — | `Family.withdrawal_order` | Household payment waterfall: the order sources are drawn to pay bills and taxes, across every member. Each source exactly once, starting with 'bank'. Defaults to bank, fixed_income, brokerage, roth_basis, pretax, roth_earnings, reserve (fixed_income and reserve may be left out: they then take those places). |
-| `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
+| `withdrawal_order` | list[`"bank"` \\| `"fixed_income"` \\| `"brokerage"` \\| `"roth_basis"` \\| `"pretax"` \\| `"roth_earnings"` \\| `"reserve"` \\| `"tax_free"`] (optional) |  | — | `Family.withdrawal_order` | Household payment waterfall: the order sources are drawn to pay bills and taxes, across every member. Each source exactly once, starting with 'bank'. Defaults to bank, fixed_income, brokerage, roth_basis, pretax, roth_earnings, reserve (fixed_income and reserve may be left out: they then take those places). |
+| `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [ConvertHomeToOntarioRentalEvent](#converthometoontariorentalevent), [HomeValuationEvent](#homevaluationevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [RRSPContributeEvent](#rrspcontributeevent), [WithdrawRegisteredEvent](#withdrawregisteredevent), [RRSPToRRIFEvent](#rrsptorrifevent), [OntarioTaxStatementEvent](#ontariotaxstatementevent), [CorporateOperatingCashEvent](#corporateoperatingcashevent), [CorporateInvestmentTransferEvent](#corporateinvestmenttransferevent), [CorporatePayrollEvent](#corporatepayrollevent), [CorporatePayDividendEvent](#corporatepaydividendevent), [CorporateIncomeTaxEvent](#corporateincometaxevent), [SellPrivateSharesEvent](#sellprivatesharesevent), [ExercisePrivateOptionsEvent](#exerciseprivateoptionsevent), [ConvertCurrencyEvent](#convertcurrencyevent), [MoveForeignCashEvent](#moveforeigncashevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
 | `actuals` | map[integer → [ActualRecords](#actualrecords)] (optional) |  | — |  | What the household's real documents say, by tax year (filed 1040 lines, W-2s, 1099s, statement balances): read by 'life-model reconcile' and the backtest, ignored by the builder. Keep real documents in my-models/ (git-ignored). |
 
 ## Meta
@@ -65,11 +66,44 @@ Builds: `LifeModel`.
 | `as_of` | string (optional) |  | — |  | Date the balances were read from statements (YYYY-MM or YYYY-MM-DD). Informational. |
 | `start_year` | integer | year | **required** | `LifeModel.start_year` | First simulated year. |
 | `end_year` | integer (optional) | year | — | `LifeModel.end_year` | Last simulated year (inclusive). Defaults to start_year + 50. |
+| `ontario_retirement_tax` | [OntarioRetirementTax](#ontarioretirementtax) (optional) |  | — |  | Ontario resident retirement-income policy and dated tax cash assumptions. |
 | `start` | string (optional) | YYYY-MM | — | `LifeModel.start` | First simulated month (YYYY-MM), in start_year: a model started in October simulates three months of its first year. Defaults to January of start_year. |
 | `seed` | integer (optional) |  | — | `LifeModel.seed` | Random seed (stochastic economy and mortality draws). |
 | `scenario` | string (optional) |  | — | `LifeModel.scenario` | Named economic/regulatory scenario from life_model.config.scenarios (e.g. 'recession'). |
 | `default_state` | string (optional) |  | — | `config.tax.state.default_state` | Two-letter state of residence for people without their own 'state'. Must have a state tax pack (unknown codes are errors, never a silent flat 6%). |
 | `accepted_warnings` | list[string] (optional) |  | — |  | Validator warning codes the household keeps on purpose (e.g. [default_child_costs, cash_not_invested]): the validator drops them, so they do not fail --checks strict. Record why with the assumptions you report. Errors cannot be accepted. |
+
+## OntarioRetirementTax
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `province` | `"ON"` |  | **required** |  |  |
+| `settlement_dates` | map[integer → date] |  | **required** |  | Projected payment or refund date for each following-year settlement. |
+| `freeze_2026` | boolean |  | `False` |  | Explicitly carry the 2026 parameters forward in projections. |
+| `freeze_after` | integer (optional) |  | — |  | Use published parameters through this year and carry its rates forward in later years. |
+| `indexation` | [OntarioTaxIndexation](#ontariotaxindexation) (optional) |  | — |  | Project indexed personal-tax amounts after a published vintage. Payroll rates and limits stay at the base vintage in future years. |
+| `track_foreign_cash_gains` | boolean |  | `False` |  | Pool this taxpayer's USD capital-account cash and calculate the annual net FX result. |
+| `estimate_registered_withholding` | boolean |  | `False` |  | Estimate non-Quebec lump-sum withholding on automatic withdrawals and scheduled payments without an explicit withholding amount. Each payment is treated as a separate request. |
+| `oas_recovery_thresholds` | map[integer → Decimal] |  | {} |  | Scenario OAS recovery thresholds by actual tax year, overriding the selected rate table. |
+| `opening_balances` | map[integer → [OpeningOntarioTaxBalance](#openingontariotaxbalance)] |  | {} |  | Outstanding prior-year personal tax balances keyed by tax year. |
+
+## OntarioTaxIndexation
+
+A pinned published rate vintage and an assumed annual tax indexation rate.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `base_year` | integer |  | **required** |  | Published Ontario rate vintage for projections after this year. |
+| `annual_pct` | Decimal | percent | **required** |  | Annual percentage adjustment of indexed personal amounts. |
+
+## OpeningOntarioTaxBalance
+
+A prior year's remaining tax balance as of the opening date.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `balance` | Decimal | CAD | **required** |  | CAD payable (positive) or refund receivable (negative). |
+| `settles_on` | date |  | **required** |  | Scheduled date for the cash payment or refund. |
 
 ## Economy
 
@@ -135,10 +169,13 @@ Builds: `Person`.
 | `death_age` | integer (optional) | age | — | `Person.death_age` | Age of death for mortality 'fixed_age'. |
 | `spending` | [Spending](#spending) (optional) |  | — |  | This person's living spending. Spending is per person and adds across the household: the household's budget is the sum of every person's amount_annual, so give the whole household budget on one spouse (and leave the other spouse's spending out, or 0) or split it between them, never the full budget on each. Required for a person without a spouse (relationships.marriages) whose spending holds the budget; a spouse who leaves it out spends nothing of their own. |
 | `jobs` | list[[Job](#job)] |  | [] |  | Jobs (W-2). |
-| `accounts` | list[one of: [BankAccount](#bankaccount), [CashReserveAccount](#cashreserveaccount), [FixedIncomeAccount](#fixedincomeaccount), [BrokerageAccount](#brokerageaccount), [Job401k](#job401k), [TraditionalIRA](#traditionalira), [RothIRA](#rothira), [HealthSavingsAccount](#healthsavingsaccount), [Plan529](#plan529), [InheritedPretaxAccount](#inheritedpretaxaccount), [Pension](#pension), [Annuity](#annuity), [DonorAdvisedFund](#donoradvisedfund), [Trust](#trust)] |  | [] |  | Accounts, discriminated by 'kind'. |
+| `accounts` | list[one of: [BankAccount](#bankaccount), [CashReserveAccount](#cashreserveaccount), [ForeignCashAccount](#foreigncashaccount), [PrivateShareAccount](#privateshareaccount), [PrivateOptionAccount](#privateoptionaccount), [PrivateShareIssuanceAccount](#privateshareissuanceaccount), [ShareSaleReceivableAccount](#sharesalereceivableaccount), [FixedIncomeAccount](#fixedincomeaccount), [BrokerageAccount](#brokerageaccount), [Job401k](#job401k), [TraditionalIRA](#traditionalira), [RothIRA](#rothira), [RRSP](#rrsp), [RRIF](#rrif), [TFSA](#tfsa), [HealthSavingsAccount](#healthsavingsaccount), [Plan529](#plan529), [InheritedPretaxAccount](#inheritedpretaxaccount), [Pension](#pension), [Annuity](#annuity), [DonorAdvisedFund](#donoradvisedfund), [Trust](#trust)] |  | [] |  | Accounts, discriminated by 'kind'. |
+| `rrsp_room` | [CanadianRRSPRoom](#canadianrrsproom) (optional) |  | — |  | Shared room for dated RRSP contributions. |
+| `tfsa_room` | [CanadianTFSARoom](#canadiantfsaroom) (optional) |  | — |  | One shared contribution room for this owner. |
 | `debts` | list[one of: [CarLoan](#carloan), [StudentLoan](#studentloan), [CreditCard](#creditcard), [HomeEquityLine](#homeequityline), [BridgeLine](#bridgeline)] |  | [] |  | Debts (car, student, credit_card, heloc, bridge_line). |
 | `housing` | list[one of: [Home](#home), [Rental](#rental)] |  | [] |  | Homes and rentals. |
 | `insurance` | list[one of: [LifeInsurance](#lifeinsurance), [GeneralInsurance](#generalinsurance)] |  | [] |  | Insurance policies. |
+| `canadian_pensions` | list[[CanadianPensionSpec](#canadianpensionspec)] |  | [] |  | Dated Canadian public pensions. Requires the Ontario income tax policy. |
 | `social_security` | [SocialSecurity](#socialsecurity) (optional) |  | — |  | Social Security benefits. |
 | `healthcare` | [Healthcare](#healthcare) (optional) |  | — |  | Opt-in healthcare cost agents. |
 | `giving` | list[[Donation](#donation)] |  | [] |  | Charitable giving. |
@@ -339,6 +376,98 @@ Builds: `CashReserve`.
 | `balance` | number | USD | **required** |  | Starting earmarked balance. |
 | `release_on` | date |  | **required** |  | Calendar date when the balance becomes available. |
 
+## ForeignCashAccount
+
+Settled USD cash carried at a stated CAD reporting rate.
+
+Builds: `ForeignCash`.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `kind` | `"foreign_cash"` |  | **required** |  |  |
+| `id` | string (optional) |  | — |  | Optional identifier for this foreign cash account, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
+| `name` | string |  | **required** |  | Name of the foreign cash account. |
+| `currency` | `"USD"` |  | **required** |  | Currency of the settled cash. |
+| `units` | Decimal | USD | **required** |  | Opening settled cash in the stated currency. |
+| `cad_mark` | Decimal |  | **required** |  | CAD reporting value per USD. It does not set the trade rate. |
+| `opening_cad_basis` | Decimal (optional) |  | — |  | Actual CAD basis of opening USD units, required for positive balances with FX tax enabled. |
+
+## PrivateShareAccount
+
+One owner's pooled holding of identical private shares.
+
+Builds: `PrivateShareHolding`.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `kind` | `"private_shares"` |  | **required** |  |  |
+| `id` | string (optional) |  | — |  | Optional identifier for this private share holding, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
+| `name` | string |  | **required** |  | Name of the security or share class. |
+| `quantity` | integer |  | **required** |  | Opening share count. |
+| `cad_basis` | Decimal | CAD | **required** |  | Pooled Canadian adjusted cost base. |
+| `cad_price` | Decimal | CAD | **required** |  | Valuation per share for the balance sheet. |
+
+## PrivateOptionAccount
+
+Opening non-CCPC employee option grant for one issued share class.
+
+Builds: `PrivateOptionGrant`.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `kind` | `"private_options"` |  | **required** |  |  |
+| `id` | string (optional) |  | — |  | Optional identifier for this private option grant, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
+| `name` | string |  | **required** |  | Name of the employee option grant. |
+| `holding` | string |  | **required** |  | The owner's private share holding for this grant. |
+| `quantity` | integer |  | **required** |  | Number of options in the grant, including previously used options. |
+| `strike_price` | Decimal | currency | **required** |  | Strike per option in the grant currency. |
+| `currency` | `"CAD"` \\| `"USD"` |  | **required** |  | Currency of the strike and exercise value. |
+| `expires_on` | date |  | **required** |  | Last day of exercise. Remaining options expire at the end of that day. |
+| `blackouts` | list[[OptionBlackout](#optionblackout)] |  | [] |  | Exercise blackout intervals. |
+| `exercised` | integer |  | `0` |  | Options already exercised at opening. |
+| `expired` | integer |  | `0` |  | Options already expired at opening. |
+
+## OptionBlackout
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `start` | date |  | **required** |  | First day exercise is blocked. |
+| `end` | date |  | **required** |  | Last day exercise is blocked, inclusive. |
+
+## PrivateShareIssuanceAccount
+
+Paid-for shares from an earlier exercise that are awaiting release for sale.
+
+Builds: `PendingPrivateShares`.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `kind` | `"private_share_issuance"` |  | **required** |  |  |
+| `id` | string (optional) |  | — |  | Optional identifier for this pending private share issuance, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
+| `name` | string |  | **required** |  | Name or reference of the executed option acquisition. |
+| `holding` | string |  | **required** |  | The owner's private share holding that receives the shares. |
+| `quantity` | integer |  | **required** |  | Number of paid-for shares awaiting release. |
+| `cad_basis` | Decimal | CAD | **required** |  | Share of the CAD pooled cost base assigned to this opening position. |
+| `available_on` | date |  | **required** |  | Date those shares become available for sale. |
+
+## ShareSaleReceivableAccount
+
+An opening claim from a disposition accounted for before the run.
+
+Builds: `ShareSaleReceivable`.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `kind` | `"share_sale_receivable"` |  | **required** |  |  |
+| `id` | string (optional) |  | — |  | Optional identifier for this share sale receivable, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
+| `name` | string |  | **required** |  | Name or reference for the sale. |
+| `bank` | string |  | **required** |  | The owner's CAD bank or matching foreign cash account that receives the proceeds. |
+| `balance` | Decimal | CAD | **required** |  | The unsettled amount's opening book value. |
+| `currency` | `"CAD"` \\| `"USD"` |  | **required** |  | Currency in which sale proceeds are owed. |
+| `foreign_net` | Decimal | currency | **required** |  | Net sale proceeds in the stated currency. |
+| `settlement_fx` | Decimal (optional) |  | — |  | CAD conversion rate or CAD tax value per unit on USD settlement. If omitted on a USD receipt, carry its disposition value. |
+| `settles_on` | date |  | **required** |  | Date the destination account receives settled cash. |
+
 ## FixedIncomeAccount
 
 A CD, Treasury, I bond or bond fund holding (see :mod:`life_model.account.fixed_income`). A bank account named "Bonds" is spent like checking; this keeps the instrument's own rules: a CD's interest and early-withdrawal penalty, a Treasury's state-exempt coupon and maturity, an I bond's composite rate, lock and tax deferral, a bond fund's distributions and average-cost basis.
@@ -464,6 +593,38 @@ Builds: `RothIRA`.
 | `conversion_basis` | number (optional) | USD | — | `RothIRA.conversion_basis` | Converted amounts in the balance (assumed more than five years old: tax- and penalty-free). |
 | `allocation_pct` | map[`"equity"` \\| `"bond"` \\| `"cash"` → number] (optional) | percent | — | `Investment.allocation` | Asset allocation in percent by asset class (equity, bond, cash; sums to 100), e.g. {equity: 70, bond: 30}: the account grows at the blend of the economy's returns, rebalanced yearly. A numeric growth_pct overrides it. |
 | `expense_ratio_pct` | number (optional) | percent | — | `Investment.expense_ratio_pct` | Fund expense ratio (percent a year), netted out of the return. |
+
+## RRSP
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Optional identifier for this account, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
+| `balance` | number | CAD | `0.0` |  | Opening balance. |
+| `growth_pct` | number \\| `"economy"` | percent | `"economy"` |  | Annual return. |
+| `kind` | `"rrsp"` |  | **required** |  |  |
+| `owner_birth` | date |  | **required** |  | Full birth date for Canadian maturity rules. |
+| `convert_at_maturity` | boolean |  | **required** |  | Elect direct RRSP-to-RRIF transfer at maturity. |
+
+## RRIF
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Optional identifier for this account, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
+| `balance` | number | CAD | `0.0` |  | Opening balance. |
+| `growth_pct` | number \\| `"economy"` | percent | `"economy"` |  | Annual return. |
+| `kind` | `"rrif"` |  | **required** |  |  |
+| `owner_birth` | date |  | **required** |  | Full birth date of the annuitant. |
+| `established_year` | integer | year | **required** |  | Calendar year the RRIF was established. |
+| `minimum_age_birth` | date (optional) |  | — |  | Birth date elected for minimum withdrawals. |
+
+## TFSA
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Optional identifier for this account, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
+| `balance` | number | CAD | `0.0` |  | Opening balance. |
+| `growth_pct` | number \\| `"economy"` | percent | `"economy"` |  | Annual return. |
+| `kind` | `"tfsa"` |  | **required** |  |  |
 
 ## HealthSavingsAccount
 
@@ -610,6 +771,24 @@ Builds: `Trust`.
 | `growth_pct` | number \\| `"economy"` | percent (typically > 1) | `"economy"` | `Trust.growth_rate` | Annual return; 'economy' follows the asset class. |
 | `asset_class` | `"equity"` \\| `"bond"` \\| `"cash"` |  | `"equity"` | `Trust.asset_class` | Asset class. |
 
+## CanadianRRSPRoom
+
+One person's assessed/planned room and deduction limits for all their RRSPs.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `available` | Decimal | CAD | **required** |  | Available contribution room at the opening date. |
+| `annual_additions` | map[integer → Decimal] | CAD | {} |  | New room to add at the start of each future calendar year. |
+| `deduction_limits` | map[integer → Decimal] | CAD | **required** |  | Deduction limit available for the new claims modeled for each tax year. |
+
+## CanadianTFSARoom
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `available` | number | CAD | **required** |  | Total owner's available room at projection start. |
+| `annual_limits` | map[integer → number] |  | **required** |  | Published or assumed CAD TFSA dollar limits by calendar year after the opening year. |
+| `withdrawals_to_restore` | number | CAD | `0.0` |  | Withdrawals already made in the opening year to restore next January. |
+
 ## CarLoan
 
 An auto loan. Enter a loan the way its statement shows it: the original amount and term with an origination month (or payments_made) give today's balance and payment with no other input; or give the current balance with the months remaining (or the payment). Any three of balance / months remaining / payment determine the fourth; inputs that contradict each other are a validation error naming the field. The first payment is in the month after origination; a balance below the original schedule is a prepaid loan (it pays off early at the contract payment). A balance above it (a loan behind on its payments) needs schedule: statement.
@@ -752,7 +931,7 @@ Builds: `Mortgage`.
 |---|---|---|---|---|---|
 | `original_amount` | number (optional) | USD | — | `Loan.loan_amount` | Amount originally borrowed (may be omitted with balance and remaining_months). |
 | `balance` | number (optional) | USD | — | `Loan.principal` | Current principal (defaults to the original schedule's balance: original_amount for a new loan). |
-| `rate_pct` | number | percent (typically > 1) | **required** | `Loan.yearly_interest_rate` | APR. |
+| `rate_pct` | number | percent (typically > 1) | **required** | `Mortgage.yearly_interest_rate` | Quoted annual interest rate used to calculate payments. |
 | `term_years` | integer (optional) | years | — | `Loan.length_years` | Original term in whole years (or term_months). |
 | `term_months` | integer (optional) | months | — | `Loan.term_months` | Original term in months (66, 75, 360, ...). |
 | `payment_monthly` | number (optional) | USD/month | — | `Loan.monthly_payment` | Principal and interest per month (computed when unset). |
@@ -878,6 +1057,21 @@ Builds: `MarketplaceCoverage`.
 |---|---|---|---|---|---|
 | `slcsp_monthly` | number | USD/month | **required** | `MarketplaceCoverage.slcsp_monthly` | Second-lowest-cost silver plan premium for the people covered (1095-A column B), start-year dollars (grows with the premium). |
 | `advance_monthly` | number \\| `"estimate"` (optional) | USD/month | — | `MarketplaceCoverage.advance_monthly` | Advance premium tax credit paid to the insurer (1095-A column C): dollars a month, 'estimate' (from the last return's income), or unset (none: the whole credit on the return). |
+
+## CanadianPensionSpec
+
+A monthly Canada Pension Plan retirement or Old Age Security benefit.
+
+Builds: `CanadianPension`.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `kind` | `"cpp"` \\| `"oas"` |  | **required** |  | CPP retirement pension or OAS. |
+| `starts` | string |  | **required** |  | First benefit month, YYYY-MM. |
+| `monthly_amount` | Decimal | CAD | **required** |  | Gross monthly benefit at commencement. For OAS use the amount before its age-75 increase. |
+| `pay_day` | integer |  | `31` |  | Modeled day of receipt. Clipped to the calendar month's last day. |
+| `annual_index_pct` | Decimal | percent | `0` |  | Scenario annual January indexation after commencement. |
+| `monthly_withholding` | Decimal | CAD | `0` |  | Assumed total cash withheld each payment, including any OAS recovery withheld at source. |
 
 ## SocialSecurity
 
@@ -1020,6 +1214,7 @@ Builds: `SavingsPolicy`.
 | `source_bank` | string (optional) |  | — | `SavingsPolicy.source_bank` | Opening bank account of the person that funds the sweep. It must be spendable. |
 | `start_year` | integer (optional) | year | — | `SavingsPolicy.start_year` | First transfer year, inclusive. |
 | `end_year` | integer (optional) | year | — | `SavingsPolicy.end_year` | Last transfer year, inclusive. |
+| `reserve_ontario_tax` | boolean |  | `False` |  | Protect unpaid and estimated Ontario income tax in addition to the cash floor. |
 
 ## RothConversion
 
@@ -1034,6 +1229,79 @@ Builds: `RothConversionPolicy`.
 | `source` | string (optional) |  | — |  | Source account id (a traditional IRA, or a 401k in plan); default every traditional IRA. |
 | `target` | string (optional) |  | — |  | Roth IRA id (default the first, opened if needed). |
 | `until_age` | integer (optional) |  | — |  | Stop converting once the person reaches this age. |
+
+## CorporationSpec
+
+A wholly owned Canadian corporation with separate operating cash and liabilities.
+
+Builds: `Corporation`.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique corporation id. |
+| `name` | string |  | **required** |  | Name of the corporation. |
+| `shareholder` | string |  | **required** |  | Person who wholly owns the corporation. |
+| `cash` | Decimal | CAD | **required** |  | Opening corporate CAD cash. |
+| `fiscal_year_end_month` | integer |  | `12` |  | Last month of the fiscal year, closing on its last day. |
+| `investments` | [CorporateInterestAccountSpec](#corporateinterestaccountspec) (optional) |  | — |  | Corporate interest-bearing balance and its scenario yield. |
+| `investment_interest_ytd` | Decimal | CAD | `0` |  | Domestic interest already earned in the opening fiscal year. |
+| `nerdtoh` | Decimal | CAD | `0` |  | Opening non-eligible refundable dividend tax on hand. |
+| `dividends_paid_ytd` | Decimal | CAD | `0` |  | Qualifying non-eligible dividends already paid in the opening fiscal year. |
+| `dividend_refunds` | map[integer → [CorporateDividendRefundSpec](#corporatedividendrefundspec)] |  | {} |  | Outstanding corporate dividend refunds keyed by fiscal closing year. |
+| `operating_balances` | map[string → [CorporateOperatingBalance](#corporateoperatingbalance)] |  | {} |  | Unsettled operating receivables and payables keyed by reference. |
+| `payables` | map[string → [CorporatePayableSpec](#corporatepayablespec)] |  | {} |  | Opening unpaid obligations keyed by reference. |
+| `payroll_ytd` | [CorporatePayrollYTD](#corporatepayrollytd) (optional) |  | — |  | This corporation's payroll totals before the opening month, if any. |
+| `operating_profit_ytd` | Decimal | CAD | `0` |  | Opening fiscal-year taxable operating profit to date, after eligible payroll. |
+
+## CorporateInterestAccountSpec
+
+An interest-bearing CAD balance held separately from corporate cash.
+
+Builds: `CorporateInterestAccount`.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `balance` | Decimal | CAD | **required** |  | Opening invested balance. |
+| `annual_yield_pct` | Decimal | percent | **required** |  | Nominal annual interest rate. Interest credits monthly. |
+
+## CorporateDividendRefundSpec
+
+An accrued corporate dividend refund awaiting assessment.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `amount` | Decimal | CAD | **required** |  | Amount still expected. |
+| `due` | date |  | **required** |  | Forecast date of CRA assessment or refund payment. |
+
+## CorporateOperatingBalance
+
+An operating amount already recognized before the run but still unsettled.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `amount` | Decimal | CAD | **required** |  | CAD receivable (positive) or payable (negative). |
+| `due` | date |  | **required** |  | Date of the cash receipt or payment. |
+
+## CorporatePayableSpec
+
+An outstanding corporate obligation from before the simulation start.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `amount` | Decimal | CAD | **required** |  | Amount still payable. |
+| `due` | date |  | **required** |  | Date to pay the obligation. |
+| `redeem_investments` | boolean |  | `False` |  | Allow redemption of corporate deposits for this payable. |
+
+## CorporatePayrollYTD
+
+Employer-specific year-to-date figures for the opening calendar year.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `pensionable` | Decimal | CAD | `0` |  | Pensionable earnings. |
+| `cpp` | Decimal | CAD | `0` |  | Employee CPP before CPP2. |
+| `cpp2` | Decimal | CAD | `0` |  | Employee CPP2. |
+| `ei` | Decimal | CAD | `0` |  | Employee EI premiums. |
 
 ## Relationships
 
@@ -1063,6 +1331,7 @@ Marry another person in the household (``person`` becomes the head).
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"marry"` |  | **required** |  |  |
 | `spouse` | string |  | **required** |  | Person id of the spouse. |
 | `filing_status` | `"joint"` \\| `"separate"` |  | `"joint"` |  | Filing status after marrying. |
@@ -1101,6 +1370,7 @@ Divorce from a spouse in the household.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"divorce"` |  | **required** |  |  |
 | `spouse` | string |  | **required** |  | Person id of the spouse. |
 
@@ -1114,6 +1384,7 @@ Retire: every job stops and the retirement age becomes the current age.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"retire"` |  | **required** |  |  |
 
 ## ChangeJobEvent
@@ -1126,6 +1397,7 @@ Change a job: new salary, stop (quit / layoff with optional severance), or start
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"change_job"` |  | **required** |  |  |
 | `job` | string (optional) |  | — |  | Id of the existing job to change or stop. |
 | `salary_annual` | number (optional) | USD/year | — |  | New base salary. |
@@ -1143,6 +1415,7 @@ Move: change state of residence, end a rental, and/or buy or sell a home.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"move"` |  | **required** |  |  |
 | `state` | string (optional) |  | — |  | New two-letter state (applies to the person and their spouse). |
 | `end_rental` | string (optional) |  | — |  | Id of a rental that ends. |
@@ -1160,6 +1433,7 @@ Buy a home: down payment and closing costs are paid from the person's accounts.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"buy_home"` |  | **required** |  |  |
 | `home` | [Home](#home) |  | **required** |  | The home bought ('purchase' is forced true). |
 | `cash_funding` | [HomeCashFunding](#homecashfunding) (optional) |  | — |  | Optional rule that sets the down payment, closing costs and mortgage from bank cash. |
@@ -1170,7 +1444,10 @@ Size a purchase from available bank cash after protecting cash and paying costs.
 
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
-| `closing_costs` | Decimal | USD | **required** |  | Total cash cost of closing. |
+| `closing_costs` | Decimal |  | **required** |  | Cash closing costs before any configured transfer tax. |
+| `land_transfer_tax` | `"ontario"` \\| `"toronto"` (optional) |  | — |  | Add residential land transfer tax to closing costs. Toronto includes both taxes. |
+| `rate_compounding` | `"monthly"` \\| `"semiannual"` |  | `"monthly"` |  | Compounding of the quoted mortgage interest rate. |
+| `prepayment_privilege` | [MortgagePrepaymentPrivilege](#mortgageprepaymentprivilege) (optional) |  | — |  | Optional lump-sum terms for the new mortgage, with zero opening usage. |
 | `cash_to_keep` | Decimal | USD | **required** |  | Bank cash to retain at closing. |
 | `minimum_down_payment` | Decimal | USD | **required** |  | Minimum cash down payment. |
 | `mortgage_limit` | Decimal | USD | **required** |  | Maximum financing available at closing. |
@@ -1181,7 +1458,7 @@ Size a purchase from available bank cash after protecting cash and paying costs.
 
 ## SellHomeEvent
 
-Sell a home: pay off the mortgage, realize the equity, tax the gain above the exclusion.
+Sell a home: pay off secured debt, realize equity and apply the residence tax policy.
 
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
@@ -1189,9 +1466,49 @@ Sell a home: pay off the mortgage, realize the equity, tax the gain above the ex
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"sell_home"` |  | **required** |  |  |
 | `home` | string |  | **required** |  | Id of the home. |
 | `selling_cost_pct` | number (optional) | percent | — |  | Selling costs (configured default when unset). |
+| `selling_cost_fixed` | Decimal | currency | `0` |  | Fixed selling expenses in addition to the percentage commission. |
+| `canadian_rental_sale` | boolean |  | `False` |  | Dispose of a converted Ontario rental at market value. |
+| `canadian_principal_residence` | boolean |  | `False` |  | Under the Ontario return policy, specify that the entire gain qualifies for the Canadian principal residence exemption and the designation will be reported. |
+
+## ConvertHomeToOntarioRentalEvent
+
+Convert an existing, wholly owner-occupied home using an exempt pre-conversion gain.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"convert_home_to_ontario_rental"` |  | **required** |  |  |
+| `home` | string |  | **required** |  | Id of the owner's home being converted. |
+| `market_value` | Decimal | CAD | **required** |  | Fair market value on conversion. |
+| `monthly_rent` | Decimal | CAD/month | **required** |  | Monthly gross rent received. |
+| `monthly_operating_cost` | Decimal | CAD/month | **required** |  | Monthly current rental expenses. |
+| `eligible_interest_fraction` | Decimal |  | **required** |  | Share of mortgage interest attributable to eligible rental use of borrowed funds. |
+| `annual_index_pct` | Decimal | percent | `0` |  | Index rent and operating costs each January. |
+| `annual_value_growth_pct` | number (optional) | percent | — |  | Annual appreciation assumption for the converted rental. |
+| `full_preconversion_designation` | `True` |  | **required** |  | Explicit assumption that the entire pre-conversion gain is exempt. |
+
+## HomeValuationEvent
+
+Record an observed market value on its date without changing cash or cost basis.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"record_home_valuation"` |  | **required** |  |  |
+| `home` | string |  | **required** |  | Id of the owned home. |
+| `market_value` | Decimal | CAD | **required** |  | Observed market value. |
 
 ## OneTimeExpenseEvent
 
@@ -1203,6 +1520,7 @@ A one-time expense added to that year's spending.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"one_time_expense"` |  | **required** |  |  |
 | `amount` | number | USD | **required** |  | Amount (one time). |
 
@@ -1216,6 +1534,7 @@ An expense added every year from ``at`` through ``until`` (inclusive).
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"recurring_expense"` |  | **required** |  |  |
 | `amount_annual` | number | USD/year | **required** |  | Amount per year. |
 | `until` | [At](#at) (optional) |  | — |  | Last year (inclusive); the end of the simulation when unset. |
@@ -1230,6 +1549,7 @@ Change base spending: a new annual amount, or a percent change.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"change_spending"` |  | **required** |  |  |
 | `amount_annual` | number (optional) | USD/year | — |  | New base spending. |
 | `change_pct` | number (optional) | percent | — |  | Percent change (-20 = cut by a fifth). |
@@ -1244,8 +1564,9 @@ Open an account.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"add_account"` |  | **required** |  |  |
-| `account` | [BankAccount](#bankaccount) \\| [CashReserveAccount](#cashreserveaccount) \\| [FixedIncomeAccount](#fixedincomeaccount) \\| [BrokerageAccount](#brokerageaccount) \\| [Job401k](#job401k) \\| [TraditionalIRA](#traditionalira) \\| [RothIRA](#rothira) \\| [HealthSavingsAccount](#healthsavingsaccount) \\| [Plan529](#plan529) \\| [InheritedPretaxAccount](#inheritedpretaxaccount) \\| [Pension](#pension) \\| [Annuity](#annuity) \\| [DonorAdvisedFund](#donoradvisedfund) \\| [Trust](#trust) |  | **required** |  | The account opened. |
+| `account` | [BankAccount](#bankaccount) \\| [CashReserveAccount](#cashreserveaccount) \\| [ForeignCashAccount](#foreigncashaccount) \\| [PrivateShareAccount](#privateshareaccount) \\| [PrivateOptionAccount](#privateoptionaccount) \\| [PrivateShareIssuanceAccount](#privateshareissuanceaccount) \\| [ShareSaleReceivableAccount](#sharesalereceivableaccount) \\| [FixedIncomeAccount](#fixedincomeaccount) \\| [BrokerageAccount](#brokerageaccount) \\| [Job401k](#job401k) \\| [TraditionalIRA](#traditionalira) \\| [RothIRA](#rothira) \\| [RRSP](#rrsp) \\| [RRIF](#rrif) \\| [TFSA](#tfsa) \\| [HealthSavingsAccount](#healthsavingsaccount) \\| [Plan529](#plan529) \\| [InheritedPretaxAccount](#inheritedpretaxaccount) \\| [Pension](#pension) \\| [Annuity](#annuity) \\| [DonorAdvisedFund](#donoradvisedfund) \\| [Trust](#trust) |  | **required** |  | The account opened. |
 
 ## ReserveCashEvent
 
@@ -1257,7 +1578,9 @@ Move cash from an owned bank into an earmark until its scheduled release.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"reserve_cash"` |  | **required** |  |  |
+| `pool_cash` | boolean |  | `False` |  | Top up from the same owner's other available CAD banks. |
 | `bank` | string |  | **required** |  | Id of the owner's funding bank. |
 | `amount` | number | USD | **required** |  | Cash to earmark. |
 | `release_on` | date |  | **required** |  | Release date in a later month, before ordinary events that day. |
@@ -1272,9 +1595,286 @@ A one-time contribution from the bank into an account. Tax-advantaged accounts t
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"contribute"` |  | **required** |  |  |
 | `account` | string |  | **required** |  | Target account id. |
 | `amount` | number | USD | **required** |  | Amount (one time). |
+
+## RRSPContributeEvent
+
+Pay a dated contribution from settled cash and claim the full amount in the elected tax year.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"rrsp_contribute"` |  | **required** |  |  |
+| `pool_cash` | boolean |  | `False` |  | Top up from the same owner's other available CAD banks. |
+| `bank` | string |  | **required** |  | Id of the owner's available bank account. |
+| `account` | string |  | **required** |  | Id of the owner's RRSP. |
+| `amount` | Decimal | CAD | **required** |  | Exact cash contribution and deduction amount. |
+| `deduction_year` | integer |  | **required** |  | Contribution year or eligible preceding tax year. Start the run by that tax year. |
+
+## WithdrawRegisteredEvent
+
+Make a scheduled RRSP, RRIF or TFSA withdrawal.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"withdraw_registered"` |  | **required** |  |  |
+| `bank` | string |  | **required** |  | Id of the owner's available CAD bank account. |
+| `account` | string |  | **required** |  | Id of the owner's registered account. |
+| `amount` | Decimal | CAD | **required** |  | Exact gross withdrawal, or target gross withdrawals to date. |
+| `withholding` | Decimal (optional) | CAD | — |  | Override tax withheld on this payment. Explicit zero means no withholding. |
+| `cap_to_balance` | boolean |  | `False` |  | Allow a scheduled target to exhaust the account and pay only the available gross amount. |
+| `year_to_date_target` | boolean |  | `False` |  | Withdraw only the amount still required to reach this calendar year's target from this account. |
+
+## RRSPToRRIFEvent
+
+Transfer all or part of an owned RRSP directly to an owned RRIF.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"rrsp_to_rrif"` |  | **required** |  |  |
+| `rrsp` | string |  | **required** |  | Id of the source RRSP. |
+| `rrif` | string |  | **required** |  | Id of the receiving RRIF. |
+| `amount` | Decimal (optional) | CAD | — |  | Principal to transfer. Omit to transfer all. |
+
+## OntarioTaxStatementEvent
+
+Record reported tax amounts whose cash effects are accounted for elsewhere.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique id of the reported tax facts. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"ontario_tax_statement"` |  | **required** |  |  |
+| `employment` | [OntarioReportedEmployment](#ontarioreportedemployment) (optional) |  | — |  | Employment statement amounts. |
+| `ei_benefits` | [OntarioReportedEI](#ontarioreportedei) (optional) |  | — |  | Employment Insurance benefit amounts. |
+| `option` | [OntarioReportedOption](#ontarioreportedoption) (optional) |  | — |  | Security option benefit, deduction and tax. |
+| `taxable_interest` | Decimal | CAD | `0` |  | Additional reported taxable interest. |
+| `cpp_overpayment` | Decimal | CAD | `0` |  | Assessed or scenario CPP overpayment credit, determined separately. |
+| `noneligible_dividends` | Decimal | CAD | `0` |  | Actual non-eligible Canadian dividends already accounted for in cash. |
+| `cpp_retirement` | Decimal | CAD | `0` |  | Gross CPP retirement already received. |
+| `oas_benefits` | Decimal | CAD | `0` |  | Gross OAS already received. |
+| `pension_withheld` | Decimal | CAD | `0` |  | Income tax and recovery withheld on those reported public pensions. |
+
+## OntarioReportedEmployment
+
+Employment already paid, with deductible CPP and EI amounts reconciled to the owner's limits.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `salary` | Decimal | CAD | **required** |  | Taxable employment income. |
+| `base_cpp` | Decimal | CAD | **required** |  | Base CPP eligible for the non-refundable credit. |
+| `enhanced_cpp` | Decimal | CAD | **required** |  | Enhanced CPP and CPP2 deductible from net income. |
+| `ei` | Decimal | CAD | **required** |  | Employment insurance premiums eligible for the credit. |
+| `withheld` | Decimal | CAD | **required** |  | Income tax withheld. |
+
+## OntarioReportedEI
+
+Taxable Employment Insurance benefits reported for this owner.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `taxable` | Decimal | CAD | **required** |  | Taxable EI benefits, including any special benefits. |
+| `withheld` | Decimal | CAD | **required** |  | Income tax withheld on EI benefits. |
+| `repayable_regular` | Decimal | CAD | **required** |  | Regular benefits subject to the repayment test. Enter zero for exempt benefits. |
+
+## OntarioReportedOption
+
+Option tax amounts recorded after the exercise has been accounted for separately.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `benefit` | Decimal | CAD | **required** |  | Taxable employment benefit on exercise. |
+| `deduction` | Decimal | CAD | **required** |  | Applicable security option deduction. |
+| `withheld` | Decimal | CAD | **required** |  | Income tax withheld on exercise, excluding CPP. |
+
+## CorporateOperatingCashEvent
+
+Recognize business revenue or a deductible operating expense and date its cash movement.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique corporate event reference. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `corporation` | string |  | **required** |  | Corporation id. Set person to its shareholder. |
+| `action` | `"corporate_operating_cash"` |  | **required** |  |  |
+| `amount` | Decimal | CAD | **required** |  | Recognized CAD revenue (positive) or deductible expense (negative). |
+| `settles_on` | date (optional) |  | — |  | Cash date. Defaults to the recognition date in at. |
+
+## CorporateInvestmentTransferEvent
+
+Move money between the corporation's operating cash and interest-bearing account.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique corporate event reference. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `corporation` | string |  | **required** |  | Corporation id. Set person to its shareholder. |
+| `action` | `"corporate_investment_transfer"` |  | **required** |  |  |
+| `amount` | Decimal (optional) | CAD | — |  | CAD invested (positive) or withdrawn (negative). |
+| `cash_to_keep` | Decimal (optional) | CAD | — |  | Invest settled cash above this reserve and existing unpaid obligations. |
+
+## CorporatePayrollEvent
+
+Pay regular monthly salary from the corporation to its shareholder.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique corporate event reference. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `corporation` | string |  | **required** |  | Corporation id. Set person to its shareholder. |
+| `action` | `"corporate_payroll"` |  | **required** |  |  |
+| `gross` | Decimal | CAD | **required** |  | Gross salary for this monthly pay. |
+| `withholding` | Decimal | CAD | **required** |  | Income tax withheld for this pay. |
+| `ei_insurable` | boolean |  | **required** |  | Whether this employment is insurable for EI. |
+| `remits_on` | date |  | **required** |  | Date the corporation pays withholding, CPP and EI to the CRA. |
+
+## CorporatePayDividendEvent
+
+Pay a non-eligible Canadian dividend to the corporation's resident shareholder.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique corporate event reference. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `corporation` | string |  | **required** |  | Corporation id. Set person to its shareholder. |
+| `action` | `"corporate_pay_dividend"` |  | **required** |  |  |
+| `amount` | Decimal | CAD | **required** |  | Cash dividend paid to the shareholder, or target. |
+| `up_to_available` | boolean |  | `False` |  | Cap the target at liquid corporate assets after known payables and tax on interest to date. |
+| `redeem_investments` | boolean |  | `False` |  | Allow redemption of corporate interest-bearing deposits. |
+
+## CorporateIncomeTaxEvent
+
+Accrue a fiscal-year corporate return from operating profit and payroll.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique corporate event reference. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `corporation` | string |  | **required** |  | Corporation id. Set person to its shareholder. |
+| `action` | `"corporate_income_tax"` |  | **required** |  |  |
+| `redeem_investments` | boolean |  | `False` |  | Allow redemption of corporate deposits when tax is due. |
+| `settles_on` | date |  | **required** |  | Date the corporation pays its income-tax balance. |
+| `refund_on` | date (optional) |  | — |  | Forecast assessment or refund date when a dividend refund is expected. |
+| `rate_pct` | Decimal (optional) | percent | — |  | Assumed combined corporate rate on eligible profit. Omit for the published Ontario small-business rates supported through 2027. |
+
+## SellPrivateSharesEvent
+
+Dispose of pooled private shares and later settle the proceeds into an owned cash account.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique disposition id. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"sell_private_shares"` |  | **required** |  |  |
+| `holding` | string |  | **required** |  | Private share holding owned by the seller. |
+| `bank` | string |  | **required** |  | The seller's available CAD bank or matching foreign cash account. |
+| `quantity` | integer |  | **required** |  | Number of shares disposed of. |
+| `price` | Decimal | currency | **required** |  | Gross sale price per share in the stated currency. |
+| `fees` | Decimal | currency | `0` |  | Selling fees in the stated currency. |
+| `currency` | `"CAD"` \\| `"USD"` |  | **required** |  | Currency in which the sale is priced. |
+| `disposition_fx` | Decimal |  | **required** |  | CAD per currency unit for the tax disposition. |
+| `settlement_fx` | Decimal (optional) |  | — |  | Bank conversion rate after costs for CAD settlement. Omit for same-currency settlement. |
+| `settles_on` | date |  | **required** |  | Date the destination account receives settled cash. |
+
+## ExercisePrivateOptionsEvent
+
+Fund a private employee option acquisition and release the resulting shares on a specified date.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique id of the option exercise. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"exercise_private_options"` |  | **required** |  |  |
+| `grant` | string |  | **required** |  | The owner's option grant. |
+| `bank` | string |  | **required** |  | The owner's available CAD bank or USD cash account matching the grant. |
+| `quantity` | integer |  | **required** |  | Number of employee options to exercise. |
+| `market_price` | Decimal | currency | **required** |  | Fair market value per share on acquisition, in the grant currency. |
+| `tax_fx` | Decimal |  | **required** |  | CAD per unit of grant currency on acquisition. |
+| `funding_fx` | Decimal (optional) |  | — |  | CAD per unit for CAD-funded strike costs. Defaults to tax_fx. Omit for USD funding. |
+| `income_tax_withheld` | Decimal | currency | **required** |  | Income tax withheld at exercise in the funding currency. |
+| `payroll_withheld` | Decimal | currency | `0` |  | Other cash withholding, such as CPP, in the funding currency. |
+| `deduction_fraction` | Decimal |  | **required** |  | Established deduction fraction, zero or one half. |
+| `tax_on` | date (optional) |  | — |  | Effective acquisition for the tax return if later than cash funding. |
+| `usd_payment_tax_fx` | Decimal (optional) |  | — |  | CAD value per USD disposed on the payment date, when tracking cash FX gains. |
+| `available_on` | date |  | **required** |  | Date the acquired shares become available for sale. |
+
+## ConvertCurrencyEvent
+
+Exchange settled cash between an owned USD account and a CAD bank account.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"convert_currency"` |  | **required** |  |  |
+| `pool_cash` | boolean |  | `False` |  | Top up from the same owner's other available CAD banks. |
+| `bank` | string |  | **required** |  | The owner's available CAD bank account. |
+| `foreign_cash` | string |  | **required** |  | The owner's USD cash account. |
+| `direction` | `"buy_foreign"` \\| `"sell_foreign"` |  | **required** |  | Which currency to buy. |
+| `units` | Decimal (optional) | USD | — |  | USD to exchange. Omit only to sell the USD account's entire balance. |
+| `cad_rate` | Decimal |  | **required** |  | Actual CAD paid or received for each USD, after fees. |
+
+## MoveForeignCashEvent
+
+Post an owned USD transfer or an external payment in USD.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"move_foreign_cash"` |  | **required** |  |  |
+| `source` | string |  | **required** |  | Owner's settled USD source account. |
+| `target` | string (optional) |  | — |  | Owner's USD account receiving an internal transfer. |
+| `units` | Decimal | USD | **required** |  | USD paid or transferred. |
+| `expense` | string (optional) |  | — |  | Purpose of an external payment. |
+| `cad_tax_fx` | Decimal (optional) |  | — |  | Payment-date CAD value per USD. |
 
 ## StopContributionEvent
 
@@ -1286,6 +1886,7 @@ Stop the person's recurring contributions into an account from this month: its c
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"stop_contribution"` |  | **required** |  |  |
 | `account` | string |  | **required** |  | Account id (one of the person's accounts). |
 | `bucket` | `"pretax"` \\| `"roth"` \\| `"after_tax"` (optional) |  | — |  | For a 401k: which bucket (unset: every bucket). |
@@ -1300,6 +1901,7 @@ Change (or start) the person's recurring contribution into an account from this 
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"change_contribution"` |  | **required** |  |  |
 | `account` | string |  | **required** |  | Account id (one of the person's accounts). |
 | `bucket` | `"pretax"` \\| `"roth"` \\| `"after_tax"` (optional) |  | — |  | For a 401k: which bucket (default pretax). |
@@ -1317,6 +1919,7 @@ Convert pre-tax money to a Roth IRA (``life_model.policies.convert_to_roth``): p
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"convert_to_roth"` |  | **required** |  |  |
 | `amount` | number (optional) | USD | — |  | Amount converted. |
 | `fill_bracket_pct` | number (optional) | percent | — |  | Or convert enough to fill ordinary taxable income to the top of this bracket. |
@@ -1333,6 +1936,7 @@ Claim Social Security (sets the claiming age; the person needs social_security).
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"claim_social_security"` |  | **required** |  |  |
 
 ## DieEvent
@@ -1345,6 +1949,7 @@ Death at a given time (sets fixed-age mortality).
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"die"` |  | **required** |  |  |
 
 ## RefinanceEvent
@@ -1357,6 +1962,7 @@ Refinance a mortgage (``debt`` is the home's id) or a car or student loan: a new
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"refinance"` |  | **required** |  |  |
 | `debt` | string |  | **required** |  | Id of the home (its mortgage) or of the car / student loan. |
 | `rate_pct` | number | percent | **required** |  | New APR. |
@@ -1377,6 +1983,7 @@ Renew a mortgage before the specified month's payment, with no new borrowing or 
 | `at` | [MortgageRenewalAt](#mortgagerenewalat) |  | **required** |  | Effective month as YYYY-MM or {year, month, day: 1}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"renew_mortgage"` |  | **required** |  |  |
 | `home` | string |  | **required** |  | Id of the borrower's home with the mortgage. |
 | `rate_pct` | number | percent | **required** |  | New quoted annual rate. |
@@ -1407,6 +2014,7 @@ Pay a mortgage's outstanding principal and quoted final interest from bank cash 
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"pay_mortgage_at_maturity"` |  | **required** |  |  |
 | `home` | string |  | **required** |  | Id of the borrower's home with the mortgage. |
 | `interest_due` | number | USD | **required** |  | Lender's quoted interest due at payoff. |
@@ -1423,10 +2031,12 @@ Apply surplus spendable bank cash to mortgage principal after the month's bills.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"prepay_mortgage"` |  | **required** |  |  |
 | `home` | string |  | **required** |  | Id of the borrower's home with the mortgage. |
 | `cash_fraction` | number |  | `1.0` |  | Fraction of spendable cash above the floor to pay, between zero and one. |
 | `cash_to_keep` | number | USD | `0.0` |  | Minimum spendable bank balance to keep after the prepayment. |
+| `reserve_ontario_tax` | boolean |  | `False` |  | Protect unpaid and estimated Ontario income tax in addition to the cash floor. |
 
 ## HelocDrawEvent
 
@@ -1438,6 +2048,7 @@ Draw on a home equity line: to the bank, or spent on improvements to the home se
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"heloc_draw"` |  | **required** |  |  |
 | `heloc` | string |  | **required** |  | Id of the home equity line (a 'heloc' debt). |
 | `amount` | number | USD | **required** |  | Amount drawn (up to the available credit). |
@@ -1453,6 +2064,7 @@ Deposit a dated draw from approved secured credit into bank cash.
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `bridge` | string |  | **required** |  | Id of the borrower's approved bridge line. |
 | `action` | `"draw_bridge"` |  | **required** |  |  |
 | `amount` | number | USD | **required** |  | Required draw. |
@@ -1467,6 +2079,7 @@ Repay the bridge's drawn principal and accrued interest from spendable bank cash
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `bridge` | string |  | **required** |  | Id of the borrower's approved bridge line. |
 | `action` | `"repay_bridge"` |  | **required** |  |  |
 | `cash_to_keep` | number | USD | `0.0` |  | Spendable cash floor after repayment. |
@@ -1481,6 +2094,7 @@ The person becomes disabled: every job stops and each disability policy with a b
 | `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
 | `person` | string |  | **required** |  | Person the event applies to. |
 | `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
 | `action` | `"disability"` |  | **required** |  |  |
 
 ## ActualRecords

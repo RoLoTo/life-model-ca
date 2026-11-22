@@ -43,7 +43,8 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sw23/life-model"
+Homepage = "https://github.com/RoLoTo/life-model-ca"
+Upstream = "https://github.com/sw23/life-model"
 
 [tool.setuptools]
 # Only ship data explicitly declared below; otherwise setuptools-scm's VCS file

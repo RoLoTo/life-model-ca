@@ -34,7 +34,7 @@ at the year end.
 | Spending | `stat_money_spent` | STATS | Person | sum | yes | yes | Living expenses plus one-time expenses charged in the year. |
 | 401k Contrib | `stat_retirement_contrib` | STATS | Job | sum | yes | yes | Employee 401k deferrals (pre-tax and Roth) in the year. |
 | 401k Match | `stat_retirement_match` | STATS | Job | sum | yes | yes | Employer 401k match in the year. |
-| RMDs | `stat_required_min_distrib` | STATS | Job401kAccount, TraditionalIRA | sum | yes | yes | Required minimum distributions taken in the year. |
+| RMDs | `stat_required_min_distrib` | STATS | CanadianRetirementAccount, Job401kAccount, TraditionalIRA | sum | yes | yes | Required minimum distributions taken in the year. |
 | Housing | `stat_housing_costs` | STATS | Person | sum | yes | yes | Mortgage payments, home expenses and rent paid in the year. |
 | Interest Paid | `stat_interest_paid` | STATS | Person | sum | yes | yes | Interest charged on mortgages, loans and carried debt. |
 | SS Income | `stat_ss_income` | STATS | Person | sum | yes | yes | Social Security benefits received in the year. |
@@ -48,7 +48,7 @@ at the year end.
 | Death Benefits | `stat_death_benefit_paid` | EXTRA_STATS | LifeInsurance | sum | yes | yes | Life insurance death benefits paid out. |
 | Medical Costs | `stat_medical_costs` | EXTRA_STATS | LongTermCare, MedicalCosts, Medicare | sum | yes | yes | Healthcare, Medicare and long-term-care costs. |
 | Dependent Costs | `stat_dependent_costs` | EXTRA_STATS | Child, Dependent | sum | yes | yes | Child and dependent costs charged in the year. |
-| Pension Income | `stat_pension_income` | EXTRA_STATS | Pension | sum | yes | yes | Defined-benefit pension income received. |
+| Pension Income | `stat_pension_income` | EXTRA_STATS | CanadianPension, Pension | sum | yes | yes | Defined-benefit, CPP and OAS pension income received. |
 | NIIT | `stat_taxes_paid_niit` | EXTRA_STATS | Person | sum | yes | yes | Net investment income tax. |
 | Capital Gains | `stat_capital_gains` | EXTRA_STATS | Person | sum | yes | yes | Net capital gains realized (after loss netting). |
 | Stock Vested | `stat_stock_vested` | EXTRA_STATS | StockPlan | sum | yes | yes | Value of stock compensation vesting in the year. |
@@ -348,3 +348,12 @@ notebook table (`_repr_html_`) shows the life story; detail kinds are kept but n
 | `mortgage_renewed` |  | A mortgage's outstanding principal was repriced (amount: unchanged principal; details: date, rate_pct, rate_compounding, amortization_months, monthly_payment). |
 | `mortgage_paid_at_maturity` |  | A mortgage was paid off from bank cash (amount: principal plus final interest; details: date, principal, interest_due, cash_to_keep, bridge_draw when a bridge is supplied). |
 | `mortgage_prepayment` |  | Month-end cash was applied to mortgage principal (amount: principal paid; details: date, cash_before, cash_to_keep, cash_fraction, requested, limit_remaining when capped). |
+| `private_options_exercised` |  | Private employee options exercised (details: date, quantity, benefit and cash). |
+| `private_option_exercise_blocked` |  | A planned private option exercise could not proceed (date, quantity, reason). |
+| `private_options_expired` |  | Unused private employee options expired (details: date and quantity). |
+| `private_shares_issued` |  | Paid-for private shares became available for disposition (date and quantity). |
+| `foreign_cash_moved` |  | Foreign units were credited or debited (date, currency, balance and CAD value). |
+| `corporate_activity` |  | Dated corporate operating activity, payroll, tax or settlement and updated CAD balances. |
+| `canadian_pension_paid` |  | Dated CPP or OAS payment, including gross, withheld and net CAD amounts. |
+| `registered_withdrawal` |  | Dated RRSP, RRIF or TFSA withdrawal with gross, net and withholding. |
+| `rrsp_to_rrif` |  | Direct RRSP-to-RRIF transfer without a cash distribution. |

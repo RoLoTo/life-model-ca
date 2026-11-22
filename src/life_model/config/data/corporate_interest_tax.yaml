@@ -1,0 +1,8 @@
+# vintage: 2026, source: CRA T4012 chapters 6 and 7, CRA corporation tax rates, and Ontario provincial corporation tax.
+# Fractions preserve the exact rates before calculation and cent rounding.
+federal_after_abatement: "0.28"
+federal_refundable_surtax: [8, 75]
+federal_refundable_portion: [23, 75]
+ontario_general: "0.115"
+# vintage: 2026, source: Income Tax Act s. 129(1)(a) and CRA T4012 chapter 6, Dividend refund.
+noneligible_dividend_refund: [23, 60]

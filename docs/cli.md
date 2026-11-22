@@ -191,6 +191,9 @@ Failure:
 | 2 | Invalid input: the spec fails the schema or the validator, an unknown example or scenario, a year outside the run, a bad change path, a refused output path, bad flags | `validation` |
 | 1 | Any other error while running | `runtime` |
 
+A cash-funded home purchase that cannot close adds `closing_shortfall` to the JSON response.
+It carries `amount` in the household currency, the closing `date`, and the spec `person` id.
+
 Payloads: `run` has `summary` (`household`, `seed`, `dollars`, `years`, `final_year`,
 `final_net_worth`, `final_balances`, `totals`, `shortfall_years`, `conservation_failures`,
 `net_worth_peak`, `lowest_cash`, `lowest_cash_retired`, `yearly`) and `files`; `validate` has

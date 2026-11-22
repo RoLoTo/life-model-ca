@@ -454,6 +454,10 @@ def balance_sheet_lines(agent: Any) -> list[tuple[str, float, Any]]:
     """
     Person, FinancialAccount, Loan, RevolvingDebt, Home, Annuity, Trust, TrustType, LifeInsurance = _sheet_types()
 
+    from .canada.corporation import Corporation
+
+    if isinstance(agent, Corporation):
+        return agent.balance_sheet_lines()
     if isinstance(agent, Person):
         lines = [
             (cash_label(agent), agent.cash, agent),
@@ -494,7 +498,13 @@ def household_balance_sheet(model: "LifeModel", *, include_positions: bool = Fal
     ``include_positions`` adds identities captured at the same moment as the balances.
     """
     person_type = _sheet_types()[0]
-    living = {agent.unique_id for agent in model.agents if isinstance(agent, person_type) and not agent.is_deceased}
+    from .canada.corporation import Corporation
+
+    living = {
+        agent.unique_id
+        for agent in model.agents
+        if isinstance(agent, Corporation) or (isinstance(agent, person_type) and not agent.is_deceased)
+    }
     lines: dict[str, float] = {}
     owners: dict[str, int] = {}
     details: dict[str, PositionIdentity] | None = {} if include_positions else None

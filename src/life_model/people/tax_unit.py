@@ -76,10 +76,14 @@ def validate_withdrawal_order(order: "tuple[str, ...] | list[str] | None") -> tu
         order = ("bank", "fixed_income", *order[1:])
     if "reserve" not in order:
         order = (*order, "reserve")
-    if sorted(order) != sorted(DEFAULT_WITHDRAWAL_ORDER) or order[0] != "bank":
+    required = set(DEFAULT_WITHDRAWAL_ORDER)
+    if "tax_free" in order:
+        required.add("tax_free")
+        if not {"roth_basis", "roth_earnings"}.intersection(order):
+            required.difference_update({"roth_basis", "roth_earnings"})
+    if set(order) != required or len(order) != len(required) or order[0] != "bank":
         raise ValueError(
-            f"withdrawal_order must list each of {DEFAULT_WITHDRAWAL_ORDER} exactly once (fixed_income and "
-            f"reserve may be left out), starting with 'bank'; got {order}"
+            f"withdrawal_order must list each of {sorted(required)} exactly once, starting with 'bank'; got {order}"
         )
     return order
 
@@ -120,6 +124,9 @@ class TaxUnit:
             raise ValueError("TaxUnit requires at least one member")
         self.members = members
         self.withdrawal_order = validate_withdrawal_order(withdrawal_order)
+        if "tax_free" not in self.withdrawal_order and any(member.tfsas for member in members):
+            index = self.withdrawal_order.index("pretax")
+            self.withdrawal_order = (*self.withdrawal_order[:index], "tax_free", *self.withdrawal_order[index:])
         self.filing_status = members[0].filing_status
         # The year's tax parameters (brackets, deductions, wage base) for this settlement.
         self.config = members[0].model.year_config
@@ -532,6 +539,17 @@ class TaxUnit:
         additional_preferential: float = 0.0,
         additional_short_term: float = 0.0,
     ) -> TaxesDue:
+        model = self.members[0].model
+        policy = getattr(model, "income_tax_policy", None)
+        if policy is not None:
+            return policy(
+                self,
+                additional_income=additional_income,
+                additional_preferential=additional_preferential,
+                additional_short_term=additional_short_term,
+            )
+        if any(member.canadian_deferred or member.tfsas for member in self.members):
+            raise ValueError("Canadian registered accounts require an explicit Canadian income tax policy")
         # The taxable share of Social Security depends on everything else on the return, including
         # the prospective amounts being sized, so it is (re)computed first.
         self._post_taxable_social_security(additional_income + additional_short_term, additional_preferential)
@@ -740,6 +758,8 @@ class TaxUnit:
                 raised += member.withdraw_from_brokerage_accounts(want)
             elif source == "pretax":
                 raised += member.withdraw_from_pretax_accounts(want)
+            elif source == "tax_free":
+                raised += member.withdraw_from_tax_free_accounts(want)
             elif source == "roth_basis":
                 if self._under_retirement_age(member):
                     raised += member.withdraw_tax_free_from_roth_iras(want)
@@ -764,6 +784,8 @@ class TaxUnit:
             return member.brokerage_balance
         if source == "pretax":
             return member.pretax_account_balance
+        if source == "tax_free":
+            return sum(a.balance for a in member.tfsas)
         if source == "fixed_income":
             return member.fixed_income_balance(reserve=False)
         if source == "reserve":
@@ -788,7 +810,14 @@ class TaxUnit:
                 kind, accounts = EventKind.FORCED_SALE, member.brokerage_accounts
             elif source == "pretax":
                 kind = EventKind.PRETAX_WITHDRAWAL
-                accounts = [*member.all_retirement_accounts, *member.traditional_iras, *member.hsas]
+                accounts = [
+                    *member.all_retirement_accounts,
+                    *member.traditional_iras,
+                    *member.canadian_deferred,
+                    *member.hsas,
+                ]
+            elif source == "tax_free":
+                kind, accounts = EventKind.WITHDRAWAL, member.tfsas
             elif source in ("fixed_income", "reserve"):
                 kind, accounts = EventKind.WITHDRAWAL, list(member.fixed_income_holdings)
             else:
@@ -1169,8 +1198,12 @@ class TaxUnit:
         spending_by_member: dict[int, float] = {}
         housing_by_member: dict[int, float] = {}
         interest_by_member: dict[int, float] = {}
-        self._receive_refunds()
-        tax_lines, tax_payments = self._tax_payment_lines()
+        policy = getattr(model, "income_tax_policy", None)
+        if getattr(policy, "settle_year", None) is None:
+            self._receive_refunds()
+            tax_lines, tax_payments = self._tax_payment_lines()
+        else:
+            tax_lines, tax_payments = [], 0.0
         debt_lines, carried = self._carried_debt_lines(interest_by_member)
         spending_lines, spending = self._spending_lines(spending_by_member)
         housing_lines, housing = self._housing_and_debt_lines(housing_by_member, interest_by_member)
@@ -1419,6 +1452,10 @@ class TaxUnit:
         becomes debt.
         """
         model = self.members[0].model
+        settle = getattr(getattr(model, "income_tax_policy", None), "settle_year", None)
+        if settle is not None:
+            settle(self)
+            return
         year = model.year
         bill_lines: list[_BillLine] = []
 

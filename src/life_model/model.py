@@ -146,6 +146,15 @@ class EventKind(str, Enum):
     MORTGAGE_RENEWED = "mortgage_renewed"
     MORTGAGE_PAID_AT_MATURITY = "mortgage_paid_at_maturity"
     MORTGAGE_PREPAYMENT = "mortgage_prepayment"
+    PRIVATE_OPTIONS_EXERCISED = "private_options_exercised"
+    PRIVATE_OPTION_EXERCISE_BLOCKED = "private_option_exercise_blocked"
+    PRIVATE_OPTIONS_EXPIRED = "private_options_expired"
+    PRIVATE_SHARES_ISSUED = "private_shares_issued"
+    FOREIGN_CASH_MOVED = "foreign_cash_moved"
+    CORPORATE_ACTIVITY = "corporate_activity"
+    CANADIAN_PENSION_PAID = "canadian_pension_paid"
+    REGISTERED_WITHDRAWAL = "registered_withdrawal"
+    RRSP_TO_RRIF = "rrsp_to_rrif"
 
     @property
     def is_detail(self) -> bool:
@@ -178,6 +187,15 @@ EVENT_KIND_DOCS: dict[str, str] = {
     "details: date, principal, interest_due, cash_to_keep, bridge_draw when a bridge is supplied).",
     "mortgage_prepayment": "Month-end cash was applied to mortgage principal (amount: principal paid; "
     "details: date, cash_before, cash_to_keep, cash_fraction, requested, limit_remaining when capped).",
+    "private_options_exercised": "Private employee options exercised (details: date, quantity, benefit and cash).",
+    "private_option_exercise_blocked": "A planned private option exercise could not proceed (date, quantity, reason).",
+    "private_options_expired": "Unused private employee options expired (details: date and quantity).",
+    "private_shares_issued": "Paid-for private shares became available for disposition (date and quantity).",
+    "foreign_cash_moved": "Foreign units were credited or debited (date, currency, balance and CAD value).",
+    "corporate_activity": "Dated corporate operating activity, payroll, tax or settlement and updated CAD balances.",
+    "canadian_pension_paid": "Dated CPP or OAS payment, including gross, withheld and net CAD amounts.",
+    "registered_withdrawal": "Dated RRSP, RRIF or TFSA withdrawal with gross, net and withholding.",
+    "rrsp_to_rrif": "Direct RRSP-to-RRIF transfer without a cash distribution.",
 }
 
 _DETAIL_KINDS = frozenset(
@@ -490,7 +508,9 @@ class LifeModel(mesa.Model):
         MoneyStat(
             "stat_dependent_costs", "Dependent Costs", "Child and dependent costs charged in the year.", flow=True
         ),
-        MoneyStat("stat_pension_income", "Pension Income", "Defined-benefit pension income received.", flow=True),
+        MoneyStat(
+            "stat_pension_income", "Pension Income", "Defined-benefit, CPP and OAS pension income received.", flow=True
+        ),
         MoneyStat("stat_taxes_paid_niit", "NIIT", "Net investment income tax.", flow=True),
         MoneyStat("stat_capital_gains", "Capital Gains", "Net capital gains realized (after loss netting).", flow=True),
         MoneyStat("stat_stock_vested", "Stock Vested", "Value of stock compensation vesting in the year.", flow=True),

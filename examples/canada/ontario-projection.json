@@ -1,0 +1,53 @@
+{
+  "spec_version": 1,
+  "meta": {
+    "name": "Synthetic Ontario cash, tax and retirement",
+    "start_year": 2026,
+    "start": "2026-12",
+    "end_year": 2027,
+    "accepted_warnings": ["cash_not_invested", "no_health_coverage", "zero_growth", "fixed_growth"],
+    "ontario_retirement_tax": {
+      "province": "ON",
+      "indexation": {"base_year": 2027, "annual_pct": 2},
+      "estimate_registered_withholding": true,
+      "track_foreign_cash_gains": true,
+      "settlement_dates": {"2026": "2027-04-30", "2027": "2028-04-30"}
+    }
+  },
+  "people": [{
+    "id": "owner", "name": "Synthetic resident", "birth": "1955-01", "age": 71, "retirement_age": 65,
+    "spending": {"amount_annual": 12000, "growth_pct": 0},
+    "accounts": [
+      {"kind": "bank", "id": "bank", "balance": 60000, "interest_pct": 0, "primary": true},
+      {"kind": "foreign_cash", "name": "USD deposit", "id": "usd", "currency": "USD", "units": 0, "cad_mark": "1.30"},
+      {"kind": "rrsp", "id": "registered", "balance": 100000, "growth_pct": 0,
+       "owner_birth": "1955-01-01", "convert_at_maturity": true},
+      {"kind": "private_shares", "id": "shares", "name": "Synthetic shares", "quantity": 0, "cad_basis": 0, "cad_price": 15},
+      {"kind": "private_options", "id": "grant", "name": "Synthetic grant", "holding": "shares", "quantity": 1000,
+       "strike_price": 4, "currency": "USD", "expires_on": "2027-01-28"}
+    ]
+  }],
+  "corporations": [{"id": "company", "name": "Synthetic company", "shareholder": "owner", "cash": 25000,
+                     "fiscal_year_end_month": 9, "investments": {"balance": 0, "annual_yield_pct": "3"}}],
+  "withdrawal_order": ["bank", "brokerage", "tax_free", "pretax"],
+  "events": [
+    {"action": "convert_currency", "id": "buy-usd", "person": "owner", "at": {"year": 2026, "month": 12, "day": 19},
+     "bank": "bank", "foreign_cash": "usd", "direction": "buy_foreign", "units": 4500, "cad_rate": "1.30"},
+    {"action": "exercise_private_options", "id": "exercise", "person": "owner", "at": {"year": 2026, "month": 12, "day": 20},
+     "grant": "grant", "bank": "usd", "quantity": 1000, "market_price": 8, "tax_fx": "1.25",
+     "tax_on": "2027-01-02", "available_on": "2027-01-05", "usd_payment_tax_fx": "1.30",
+     "income_tax_withheld": 500, "deduction_fraction": "0.5"},
+    {"action": "sell_private_shares", "id": "sale", "person": "owner", "at": {"year": 2027, "month": 1, "day": 10},
+     "holding": "shares", "bank": "bank", "quantity": 1000, "price": 10, "fees": 100, "currency": "USD",
+     "disposition_fx": "1.25", "settlement_fx": "1.24", "settles_on": "2027-01-15"},
+    {"action": "corporate_investment_transfer", "id": "invest", "person": "owner", "corporation": "company",
+     "at": {"year": 2026, "month": 12, "day": 28}, "cash_to_keep": 0},
+    {"action": "corporate_pay_dividend", "id": "dividend", "person": "owner", "corporation": "company",
+     "at": {"year": 2027, "month": 5, "day": 15}, "amount": 5000, "up_to_available": true, "redeem_investments": true},
+    {"action": "corporate_income_tax", "id": "corp-tax", "person": "owner", "corporation": "company",
+     "at": {"year": 2027, "month": 9, "day": 30}, "settles_on": "2027-11-30", "refund_on": "2027-12-31",
+     "redeem_investments": true},
+    {"action": "withdraw_registered", "id": "draw", "person": "owner", "at": {"year": 2027, "month": 12, "day": 1},
+     "bank": "bank", "account": "registered", "amount": 10000, "cap_to_balance": true}
+  ]
+}

@@ -108,6 +108,11 @@ fixtures use only synthetic names (a test enforces an allowlist).
   owner, usable by both, income split 50/50, passed to the survivor at a death). Constructors take canonical keyword names (`owner=`,
   `*_pct`, `*_annual`) and are keyword-only past the owner; deprecated names are still accepted with a
   `DeprecationWarning` (`life_model/deprecated_names.py`). Library code must use the canonical names.
+- **Ontario path.** `OntarioRetirementPolicy` plugs into the same taxpayer and
+  ledger. Canadian working income, accounts, FX pooling, housing conversions
+  and corporate rules live in the Canadian modules. The regular household spec
+  owns dates and scenario assumptions. For a full example and supported scope,
+  see [examples/canada/README.md](examples/canada/README.md).
 - **Construction.** The recommended path is the household spec (`life_model.spec`):
   `build_model(load(path))` validates, canonicalizes list order and constructs agents in a fixed
   order (`spec/builder.py` docstring). Direct constructors remain the low-level API; keep their

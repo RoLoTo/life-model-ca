@@ -142,6 +142,7 @@ class Home(LifeModelAgent):
         self.cost_basis: float = self.purchase_price if cost_basis is None else float(cost_basis)
         self.total_improvements: float = 0.0
         self.sold: bool = False
+        self.ontario_rental = None
         self.pmi = pmi
         self.pmi_monthly = pmi_monthly
         self.closing_cost_percent = closing_cost_percent
@@ -302,13 +303,44 @@ class Home(LifeModelAgent):
             )
         )
 
-    def sell(self, selling_cost_percent: float | None = None, *, when: date | None = None) -> float:
+    def record_market_value(self, market_value: Decimal, *, on: date) -> None:
+        """Record a dated valuation without selling the home or changing cost basis."""
+        if self.sold or market_value <= 0 or (on.year, on.month) != (self.model.year, self.model.month):
+            raise ValueError("A positive valuation must apply to an owned home in its observation month")
+        delta = float(market_value) - self.home_value
+        self.home_value = float(market_value)
+        if delta >= 0:
+            self.model.ledger.post(
+                delta,
+                FlowKind.GROWTH,
+                to_account=self,
+                source="housing market",
+                cause=f"Home market valuation on {on}",
+                agent=self.person,
+            )
+        else:
+            self.model.ledger.post(
+                -delta,
+                FlowKind.GROWTH,
+                from_account=self,
+                sink="housing market",
+                cause=f"Home market valuation on {on}",
+                agent=self.person,
+            )
+
+    def sell(
+        self,
+        selling_cost_percent: float | None = None,
+        *,
+        when: date | None = None,
+        canadian_principal_residence: bool = False,
+        selling_cost_fixed: float = 0.0,
+        canadian_rental_sale: bool = False,
+    ) -> float:
         """Sell the home: pay off the mortgage, realize equity to cash, and tax the gain.
 
-        The taxable gain above the §121 primary-residence exclusion (2-of-5-year residency assumed)
-        is added to the owner's income. Net proceeds (sale price − selling costs − mortgage payoff)
-        are credited to the owner's bank account. Returns the net proceeds. The sale date defaults
-        to the first of the simulated month and is used for dated credit secured by the home.
+        Apply the owner's residence tax policy and credit net proceeds to the owner's bank.
+        Returns the net cash received after selling costs and secured-debt payoff.
         """
         if self.sold:
             return 0.0
@@ -320,16 +352,32 @@ class Home(LifeModelAgent):
             selling_cost_percent = housing.selling_cost_percent
 
         sale_price = self.home_value
-        selling_costs = sale_price * (selling_cost_percent / 100)
+        if selling_cost_fixed < 0:
+            raise ValueError("Fixed selling costs cannot be negative")
+        selling_costs = sale_price * (selling_cost_percent / 100) + selling_cost_fixed
         mortgage_payoff = self.mortgage.principal if self.mortgage is not None else 0.0
         helocs = [line for line in self.person.home_equity_lines if line.home is self]
         heloc_payoff = sum(line.sale_payoff_amount(sale_date) for line in helocs)
 
         cost_basis = self.cost_basis + self.total_improvements
         gain = sale_price - selling_costs - cost_basis
-        exclusion = self.section_121_exclusion()
+        tax_policy = getattr(self.model, "income_tax_policy", None)
+        sale_exclusion = getattr(tax_policy, "home_sale_exclusion", None)
+        if canadian_rental_sale:
+            if self.ontario_rental is None or canadian_principal_residence or sale_exclusion is None:
+                raise ValueError("A rental sale requires an active Ontario rental and taxable treatment")
+            tax_policy.record_rental_sale(sale_date, f"rental-sale:{self.unique_id}", gain)
+            exclusion = 0.0
+        elif self.ontario_rental is not None:
+            raise ValueError("Select taxable rental disposition to sell a converted Ontario rental")
+        elif sale_exclusion is not None:
+            exclusion = sale_exclusion(self.person, gain, canadian_principal_residence)
+        else:
+            if canadian_principal_residence:
+                raise ValueError("A Canadian principal residence designation requires the Ontario return policy")
+            exclusion = self.section_121_exclusion()
         taxable_gain = max(0.0, gain - exclusion)
-        if taxable_gain > 0:
+        if taxable_gain > 0 and not canadian_rental_sale:
             # A residence held long enough to qualify for §121 is by definition held over a year,
             # so the excess above the exclusion is always a long-term gain.
             self.person.income.add(IncomeType.LONG_TERM_CAPITAL_GAIN, taxable_gain, source="home_sale")
@@ -382,6 +430,7 @@ class Home(LifeModelAgent):
                 f"(net ${net_proceeds:,.0f}, taxable gain ${taxable_gain:,.0f})",
                 net_proceeds=net_proceeds,
                 taxable_gain=taxable_gain,
+                **({"date": sale_date.isoformat(), "rental_gain_cad": str(gain)} if canadian_rental_sale else {}),
             )
         )
         return net_proceeds
@@ -408,6 +457,10 @@ class Home(LifeModelAgent):
                 lines["mortgage_interest"] = self.mortgage.interest_paid_this_year - interest_before
                 lines["mortgage_principal_before"] = before
             total += paid
+        if self.ontario_rental is not None:
+            expense = float(self.ontario_rental.record_month(self, lines.get("mortgage_interest", 0.0)))
+            lines["rental_operating_cost"] = expense
+            total += expense
         self.year_payment = lines
         return total
 
@@ -710,6 +763,7 @@ class Mortgage(Loan):
             extra_principal_monthly (float, optional): Extra principal paid every month.
             schedule (str, optional): ``"contract"`` (default) or ``"statement"`` (trust a current balance
                 above the original schedule; see :mod:`life_model.debt.terms`).
+            rate_compounding: Convention used for the quoted interest rate.
         """
         loan_amount, start_date, length_years = original_amount, start_year, term_years
         self.quoted_rate_pct = rate_pct

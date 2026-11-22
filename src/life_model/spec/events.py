@@ -34,10 +34,11 @@ mortality (``Person.death_age``). ``at: {age: A}`` is that threshold directly; a
 ``relative`` time becomes the person's age in that year (the inverse of ``get_year_at_age``). Either
 way the effect lands in the same year as an ordinary event with the same ``at``.
 
-Every compiled ``LifeEvent`` carries ``spec_source`` (the event or marriage it came from), which
-:func:`~life_model.spec.extract.spec_from_model` reads back.
+The primary compiled ``LifeEvent`` carries ``spec_source`` for
+:func:`~life_model.spec.extract.spec_from_model`. Pending share settlements are read back from their claim.
 """
 
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
 
@@ -177,7 +178,7 @@ def compile_events(builder: "_Builder", timing: EventTiming) -> list[LifeEvent]:
             head, spouse = (builder.person(pid) for pid in marriage.spouses)
             name = f"{head.name} and {spouse.name} marry"
             le = _life_event(marriage.year, name, marriage, builder.marry, head, spouse, marriage.filing_status)
-            compiled.append(((marriage.year, 0, 1, 0, -1, index), le))
+            compiled.append(((marriage.year, 0, 1, 0, 0, 0, -1, index), le))
 
     for index, event in enumerate(spec.events):
         if event.action in BUILD_TIME_ACTIONS:
@@ -188,9 +189,26 @@ def compile_events(builder: "_Builder", timing: EventTiming) -> list[LifeEvent]:
         depth = timing.depth(event)
         for offset, life_event in enumerate(_compile_one(builder, timing, event, year)):
             fixed_month = getattr(life_event, "fixed_month", None)
-            life_event._set_date(fixed_month or month, day if fixed_month in (None, month) else None)
+            explicit_month = fixed_month or life_event.month
+            effective_day = life_event.day
+            if effective_day is None and explicit_month in (None, month):
+                effective_day = day
+            life_event._set_date(explicit_month or month, effective_day)
+            priority = getattr(life_event, "same_day_priority", 0)
             compiled.append(
-                ((life_event.year, life_event.month or 0, life_event.day or 1, depth, index, offset), life_event)
+                (
+                    (
+                        life_event.year,
+                        life_event.month or 0,
+                        life_event.day or 1,
+                        priority,
+                        depth,
+                        event.same_day_order,
+                        index,
+                        offset,
+                    ),
+                    life_event,
+                )
             )
 
     compiled.sort(key=lambda pair: pair[0])
@@ -227,13 +245,43 @@ def _compile_one(builder: "_Builder", timing: EventTiming, event, year: int) -> 
 
     if action == "buy_home":
         name = _name(event, f"{person.name} buys {event.home.name}")
-        return [_life_event(year, name, event, _buy_home, builder, person, event.home, event.cash_funding)]
+        return [_life_event(year, name, event, _buy_home_event, builder, person, event)]
+
+    if action == "record_home_valuation":
+        return [
+            _life_event(
+                year, _name(event, "Record home market value"), event, _record_home_valuation, builder, person, event
+            )
+        ]
+
+    if action == "convert_home_to_ontario_rental":
+        return [
+            _life_event(
+                year,
+                _name(event, "Convert existing home to a rental"),
+                event,
+                _convert_ontario_rental,
+                builder,
+                person,
+                event,
+            )
+        ]
 
     if action == "sell_home":
         name = _name(event, f"{person.name} sells a home")
         return [
             _life_event(
-                year, name, event, _sell_home, builder, event.home, event.selling_cost_pct, timing.day_of(event)
+                year,
+                name,
+                event,
+                _sell_home,
+                builder,
+                event.home,
+                event.selling_cost_pct,
+                timing.day_of(event),
+                event.canadian_principal_residence,
+                event.selling_cost_fixed,
+                event.canadian_rental_sale,
             )
         ]
 
@@ -255,7 +303,49 @@ def _compile_one(builder: "_Builder", timing: EventTiming, event, year: int) -> 
 
     if action == "add_account":
         name = _name(event, f"{person.name} opens a {event.account.kind} account")
-        return [_life_event(year, name, event, _add_account, builder, event)]
+        opening = _life_event(year, name, event, _add_account, builder, event)
+        if isinstance(event.account, s.RRIF):
+            opening.same_day_priority = -5
+        return [opening]
+
+    if isinstance(event, s.CorporateEvent):
+        return _compile_corporate_event(builder, person, event)
+
+    if action == "move_foreign_cash":
+        return [
+            _life_event(year, _name(event, "Move settled USD cash"), event, _move_foreign_cash, builder, person, event)
+        ]
+
+    if action == "convert_currency":
+        name = _name(event, f"{person.name} converts cash")
+        return [_life_event(year, name, event, _convert_currency, builder, person, event)]
+
+    if action == "exercise_private_options":
+        return _compile_private_option_exercise(builder, person, event)
+
+    if action == "sell_private_shares":
+        return _compile_private_share_sale(builder, person, event)
+
+    if action == "ontario_tax_statement":
+        name = _name(event, f"{person.name} records Ontario tax facts")
+        return [_life_event(year, name, event, _ontario_statement, person, event)]
+
+    if isinstance(event, s.RegisteredCashEvent):
+        movement = _life_event(
+            year,
+            _name(event, f"{person.name} moves registered funds"),
+            event,
+            _registered_cash_event,
+            builder,
+            person,
+            event,
+        )
+        movement.same_day_priority = -4 if isinstance(event, s.RRSPToRRIFEvent) else -3
+        return [movement]
+
+    if action == "rrsp_contribute":
+        name = _name(event, f"{person.name} contributes to an RRSP")
+        return [_life_event(year, name, event, _rrsp_contribute, builder, person, event)]
 
     if action == "reserve_cash":
         name = _name(event, "Earmarked cash")
@@ -372,6 +462,29 @@ def _end_rental(builder: "_Builder", person, rental_id: str) -> None:
     rental.remove()
 
 
+def _buy_home_event(builder: "_Builder", person, event: s.BuyHomeEvent) -> None:
+    from ..housing.closing import ClosingShortfall
+
+    funding = event.cash_funding
+    if funding is not None and funding.land_transfer_tax is not None:
+        assert event.at.day is not None
+        from ..canada.land_transfer import residential_land_transfer_tax
+
+        on = date(builder.model.year, builder.model.month, event.at.day)
+        transfer_tax = residential_land_transfer_tax(
+            Decimal(str(event.home.purchase_price)),
+            on=on,
+            jurisdiction=funding.land_transfer_tax,
+        )
+        funding = funding.model_copy(update={"closing_costs": funding.closing_costs + transfer_tax})
+    try:
+        _buy_home(builder, person, event.home, funding)
+    except ClosingShortfall as error:
+        error.closing_on = date(builder.model.year, builder.model.month, event.at.day or 1)
+        error.person_id = event.person
+        raise
+
+
 def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCashFunding | None = None) -> None:
     if cash_funding is not None:
         from ..housing.closing import cash_funded_down_payment
@@ -390,7 +503,11 @@ def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCas
         principal = price - down
         mortgage = (
             s.Mortgage(
-                original_amount=float(principal), rate_pct=cash_funding.rate_pct, term_years=cash_funding.term_years
+                original_amount=float(principal),
+                rate_pct=cash_funding.rate_pct,
+                term_years=cash_funding.term_years,
+                rate_compounding=cash_funding.rate_compounding,
+                prepayment_privilege=cash_funding.prepayment_privilege,
             )
             if principal
             else None
@@ -408,11 +525,48 @@ def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCas
         agent.spec_id = home.id
 
 
-def _sell_home(builder: "_Builder", home_id: str, selling_cost_pct: float | None, day: int | None) -> None:
-    from datetime import date
+def _record_home_valuation(builder: "_Builder", person, event: s.HomeValuationEvent) -> None:
+    from ..housing.home import Home
 
+    home = builder.built.items.get(event.home)
+    if not isinstance(home, Home) or home.person is not person:
+        raise ValueError("A valuation requires a home owned by the person reporting the value")
+    home.record_market_value(event.market_value, on=date(event.at.year, event.at.month, event.at.day))
+
+
+def _convert_ontario_rental(builder: "_Builder", person, event: s.ConvertHomeToOntarioRentalEvent) -> None:
+    from ..canada.rental_property import OntarioRental, convert_to_rental
+    from ..housing.home import Home
+
+    home = builder.built.items.get(event.home)
+    if not isinstance(home, Home) or home.person is not person:
+        raise ValueError("An Ontario rental requires a home owned by its taxpayer")
+    on = date(event.at.year, event.at.month, event.at.day)
+    activity = OntarioRental(
+        on, event.monthly_rent, event.monthly_operating_cost, event.eligible_interest_fraction, event.annual_index_pct
+    )
+    convert_to_rental(home, on=on, market_value=event.market_value, rental=activity)
+    if event.annual_value_growth_pct is not None:
+        home._value_yearly_increase_override = event.annual_value_growth_pct
+
+
+def _sell_home(
+    builder: "_Builder",
+    home_id: str,
+    selling_cost_pct: float | None,
+    day: int | None,
+    canadian_principal_residence: bool = False,
+    selling_cost_fixed: Decimal = Decimal(0),
+    canadian_rental_sale: bool = False,
+) -> None:
     when = date(builder.model.year, builder.model.month, day or 1)
-    builder.built.items[home_id].sell(selling_cost_pct, when=when)
+    builder.built.items[home_id].sell(
+        selling_cost_pct,
+        when=when,
+        canadian_principal_residence=canadian_principal_residence,
+        selling_cost_fixed=float(selling_cost_fixed),
+        canadian_rental_sale=canadian_rental_sale,
+    )
 
 
 def _change_spending(person, amount_annual: float | None, change_pct: float | None) -> None:
@@ -424,7 +578,11 @@ def _change_spending(person, amount_annual: float | None, change_pct: float | No
 
 def _add_account(builder: "_Builder", event: s.AddAccountEvent) -> None:
     person = builder.person(event.person)
+    if isinstance(event.account, s.RRIF) and event.account.established_year != builder.model.year:
+        raise ValueError("A newly opened RRIF must be established in its opening year")
     agent = builder.build_account(person, builder.spec.person(event.person), event.account)
+    if isinstance(event.account, s.RRIF):
+        agent.on_year_start()
     if event.account.id is not None:
         builder.built.items[event.account.id] = agent
         agent.spec_id = event.account.id
@@ -437,6 +595,11 @@ def _reserve_cash(builder: "_Builder", person, event: s.ReserveCashEvent, name: 
     bank = builder.built.items.get(event.bank)
     if not isinstance(bank, BankAccount) or bank.owner is not person:
         raise ValueError(f"Funding bank {event.bank!r} must be open and owned by {person.name}")
+    if event.pool_cash:
+        from ..account.bank import fund_from_owned_banks
+
+        when = date(builder.model.year, builder.model.month, event.at.day or 1)
+        fund_from_owned_banks(bank, Decimal(str(event.amount)), on=when)
     reserve = CashReserve(
         person,
         name=name,
@@ -448,6 +611,325 @@ def _reserve_cash(builder: "_Builder", person, event: s.ReserveCashEvent, name: 
     if event.id is not None:
         builder.built.items[event.id] = reserve
         reserve.spec_id = event.id
+
+
+def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEvent) -> list[LifeEvent]:
+    from ..canada.corporation import Corporation
+
+    corp = builder.built.items.get(event.corporation)
+    if not isinstance(corp, Corporation) or corp.shareholder is not person:
+        raise ValueError("The corporation must belong to the named shareholder")
+    on = event.effective_date()
+
+    if isinstance(event, s.CorporateOperatingCashEvent):
+        due = event.settles_on or on
+        if due == on:
+            flow = _life_event(
+                on.year,
+                _name(event, f"{corp.name} operating cash"),
+                event,
+                corp.post_operating_cash,
+                on,
+                event.amount,
+                event.id,
+                month=on.month,
+            )
+        else:
+            flow = _life_event(
+                on.year,
+                _name(event, f"{corp.name} operating accrual"),
+                event,
+                corp.record_operating_activity,
+                on,
+                event.amount,
+                event.id,
+                due,
+                month=on.month,
+            )
+        flow.same_day_priority = -2
+        if due == on or due.year > builder.model.end_year:
+            return [flow]
+        return [flow, corp.operating_settlement_event(event.id, due, event.amount)]
+
+    if isinstance(event, s.CorporateInvestmentTransferEvent):
+        if corp.investments is None:
+            raise ValueError("An investment transfer requires the corporation's interest-bearing account")
+        name = _name(event, f"{corp.name} investment transfer")
+        if event.cash_to_keep is not None:
+            transfer = _life_event(
+                on.year, name, event, corp.invest_surplus, on, event.cash_to_keep, event.id, month=on.month
+            )
+            transfer.same_day_priority = 0.25
+        else:
+            transfer = _life_event(
+                on.year, name, event, corp.investments.transfer, on, event.amount, event.id, month=on.month
+            )
+            transfer.same_day_priority = -5 if event.amount < 0 else 0
+        return [transfer]
+
+    if isinstance(event, s.CorporatePayDividendEvent):
+
+        def pay_dividend():
+            corp.pay_dividend(
+                person,
+                on,
+                event.id,
+                event.amount,
+                up_to_available=event.up_to_available,
+                redeem_investments=event.redeem_investments,
+            )
+
+        dividend = _life_event(
+            on.year, _name(event, f"{corp.name} pays a dividend"), event, pay_dividend, month=on.month
+        )
+        dividend.same_day_priority = -0.5
+        return [dividend]
+
+    refund_on = None
+    if isinstance(event, s.CorporatePayrollEvent):
+        due = event.remits_on
+        key = f"payroll:{event.id}"
+
+        def accrue():
+            corp.run_payroll(
+                person, on, event.id, event.gross, event.withholding, ei_insurable=event.ei_insurable, remits_on=due
+            )
+            if due == on:
+                corp.settle_dated(key, due)
+
+        priority = -1
+        action = "payroll"
+    else:
+        assert isinstance(event, s.CorporateIncomeTaxEvent)
+        due = event.settles_on
+        key = f"income-tax:{on.year}"
+        refund_on = event.refund_on
+
+        def accrue():
+            corp.accrue_income_tax(
+                on, due, event.rate_pct, refund_on=refund_on, redeem_investments=event.redeem_investments
+            )
+
+        priority = 1
+        action = "income tax"
+
+    accrual = _life_event(on.year, _name(event, f"{corp.name} {action}"), event, accrue, month=on.month)
+    accrual.same_day_priority = priority
+    result = [accrual]
+    if due != on and due.year <= builder.model.end_year:
+        result.append(corp.settlement_event(key, due))
+    if refund_on is not None and refund_on.year <= builder.model.end_year:
+        result.append(corp.dividend_refund_event(on.year, refund_on))
+    return result
+
+
+def _move_foreign_cash(builder: "_Builder", person, event: s.MoveForeignCashEvent) -> None:
+    from ..account.foreign_cash import ForeignCash
+
+    source = builder.built.items.get(event.source)
+    target = builder.built.items.get(event.target)
+    if not isinstance(source, ForeignCash) or source.owner is not person:
+        raise ValueError("A USD movement requires the owner's settled USD account")
+    on = date(event.at.year, event.at.month, event.at.day)
+    if event.target is not None and (not isinstance(target, ForeignCash) or target.owner is not person):
+        raise ValueError("A USD transfer needs a receiving account of the same owner")
+    source.move_cash(on, event.units, target=target, expense=event.expense, cad_tax_fx=event.cad_tax_fx)
+
+
+def _convert_currency(builder: "_Builder", person, event: s.ConvertCurrencyEvent) -> None:
+    from ..account.foreign_cash import ForeignCash
+
+    account = builder.built.items.get(event.foreign_cash)
+    if not isinstance(account, ForeignCash) or account.owner is not person:
+        raise ValueError("Currency conversion needs the owner's USD cash account")
+    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
+    account.convert(
+        builder.built.items.get(event.bank),
+        on=date(event.at.year, event.at.month, event.at.day),
+        buy_foreign=event.direction == "buy_foreign",
+        units=event.units,
+        cad_rate=event.cad_rate,
+        pool_cash=event.pool_cash,
+    )
+
+
+def _compile_private_option_exercise(
+    builder: "_Builder", person, event: s.ExercisePrivateOptionsEvent
+) -> list[LifeEvent]:
+    from ..account.private_options import PrivateOptionGrant
+
+    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
+    on = date(event.at.year, event.at.month, event.at.day)
+    due = event.available_on
+    pending = None
+
+    def exercise():
+        nonlocal pending
+        grant = builder.built.items.get(event.grant)
+        if not isinstance(grant, PrivateOptionGrant) or grant.owner is not person:
+            raise ValueError("Private option exercise needs the owner's grant")
+        pending = grant.exercise(
+            builder.built.items.get(event.bank),
+            on=on,
+            event_id=event.id,
+            quantity=event.quantity,
+            market_price=event.market_price,
+            tax_fx=event.tax_fx,
+            funding_fx=event.funding_fx,
+            deduction_fraction=event.deduction_fraction,
+            income_tax_withheld=event.income_tax_withheld,
+            payroll_withheld=event.payroll_withheld,
+            available_on=due,
+            tax_on=event.tax_on,
+            usd_payment_tax_fx=event.usd_payment_tax_fx,
+            defer_recognition=True,
+        )
+        if pending is not None and due == on:
+            pending.issue()
+
+    def issue():
+        if pending is not None:
+            pending.issue()
+
+    acquisition = _life_event(on.year, _name(event, f"{person.name} exercises private options"), event, exercise)
+    scheduled = [acquisition]
+    tax_on = event.tax_on or on
+    if on < tax_on and tax_on.year <= builder.model.end_year:
+
+        def recognize():
+            if pending is not None:
+                pending.recognize_option()
+
+        recognition = LifeEvent(
+            tax_on.year, f"Recognize funded options for {event.id}", recognize, month=tax_on.month, day=tax_on.day
+        )
+        recognition.same_day_priority = -2
+        scheduled.append(recognition)
+    if on < due and due.year <= builder.model.end_year:
+        issuance = LifeEvent(due.year, f"Issue private shares for {event.id}", issue, month=due.month, day=due.day)
+        issuance.same_day_priority = -1
+        scheduled.append(issuance)
+    return scheduled
+
+
+def _compile_private_share_sale(builder: "_Builder", person, event: s.SellPrivateSharesEvent) -> list[LifeEvent]:
+    from ..account.private_shares import PrivateShareHolding
+
+    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
+    on = date(event.at.year, event.at.month, event.at.day)
+    due = event.settles_on
+    receipt = None
+
+    def sell():
+        nonlocal receipt
+        holding = builder.built.items.get(event.holding)
+        bank = builder.built.items.get(event.bank)
+        if not isinstance(holding, PrivateShareHolding) or holding.owner is not person:
+            raise ValueError("The seller's private share holding must be open on the disposition date")
+        receipt = holding.sell(
+            bank,
+            on=on,
+            sale_id=event.id,
+            quantity=event.quantity,
+            price=event.price,
+            fees=event.fees,
+            currency=event.currency,
+            disposition_fx=event.disposition_fx,
+            settlement_fx=event.settlement_fx,
+            settles_on=due,
+        )
+        if due == on:
+            receipt.settle()
+
+    def settle():
+        assert receipt is not None
+        receipt.settle()
+
+    disposition = _life_event(on.year, _name(event, f"{person.name} sells private shares"), event, sell)
+    if due == on or due.year > builder.model.end_year:
+        return [disposition]
+    settlement = LifeEvent(due.year, f"Settle private share sale {event.id}", settle, month=due.month, day=due.day)
+    settlement.same_day_priority = -1
+    return [disposition, settlement]
+
+
+def _ontario_statement(person, event: s.OntarioTaxStatementEvent) -> None:
+    from ..tax.canadian_employment import EmploymentIncome
+    from ..tax.ontario_statement import EIBenefits, OntarioTaxStatement, OptionIncome
+
+    policy = getattr(person.model, "income_tax_policy", None)
+    if policy is None or getattr(policy, "owner", None) is not person:
+        raise ValueError("Reported Ontario tax facts require the owner's Ontario return policy")
+    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
+    facts = OntarioTaxStatement(
+        taxable_interest=event.taxable_interest,
+        cpp_overpayment=event.cpp_overpayment,
+        employment=EmploymentIncome(**event.employment.model_dump()) if event.employment is not None else None,
+        ei_benefits=EIBenefits(**event.ei_benefits.model_dump()) if event.ei_benefits is not None else None,
+        option=OptionIncome(**event.option.model_dump()) if event.option is not None else None,
+        noneligible_dividends=event.noneligible_dividends,
+        cpp_retirement=event.cpp_retirement,
+        oas_benefits=event.oas_benefits,
+        pension_withheld=event.pension_withheld,
+    )
+    policy.record_statement(date(event.at.year, event.at.month, event.at.day), event.id, facts)
+
+
+def _registered_cash_event(builder: "_Builder", person, event: s.RegisteredCashEvent) -> None:
+    from ..account.bank import BankAccount
+    from ..account.canadian import (
+        CanadianRetirementAccount,
+        CanadianTFSA,
+        transfer_rrsp_to_rrif,
+        withdraw_registered,
+    )
+
+    items = builder.built.items
+    when = event.effective_date()
+    if isinstance(event, s.RRSPToRRIFEvent):
+        source, destination = items.get(event.rrsp), items.get(event.rrif)
+        if any(
+            not isinstance(account, CanadianRetirementAccount) or account.owner is not person
+            for account in (source, destination)
+        ):
+            raise ValueError("Both registered accounts must be open and belong to the owner")
+        transfer_rrsp_to_rrif(source, destination, when, event.amount)
+    else:
+        assert isinstance(event, s.WithdrawRegisteredEvent)
+        account, bank = items.get(event.account), items.get(event.bank)
+        if not isinstance(account, CanadianRetirementAccount | CanadianTFSA) or account.owner is not person:
+            raise ValueError("The owner's registered account must be open on the withdrawal date")
+        if not isinstance(bank, BankAccount):
+            raise TypeError("The withdrawal needs an available CAD bank account")
+        withdraw_registered(
+            account,
+            bank,
+            when,
+            amount=event.amount,
+            withholding=event.withholding,
+            year_to_date_target=event.year_to_date_target,
+            cap_to_balance=event.cap_to_balance,
+        )
+
+
+def _rrsp_contribute(builder: "_Builder", person, event: s.RRSPContributeEvent) -> None:
+    from ..account.bank import BankAccount
+    from ..account.canadian import CanadianRetirementAccount
+
+    bank = builder.built.items.get(event.bank)
+    account = builder.built.items.get(event.account)
+    if not isinstance(bank, BankAccount) or not isinstance(account, CanadianRetirementAccount):
+        raise TypeError("The funding bank and RRSP must be open on the contribution date")
+    if bank.owner is not person or account.owner is not person:
+        raise ValueError("The bank and RRSP must belong to the contributor")
+    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
+    account.contribute_from(
+        bank,
+        event.amount,
+        date(event.at.year, event.at.month, event.at.day),
+        deduction_year=event.deduction_year,
+        pool_cash=event.pool_cash,
+    )
 
 
 def _contribute(builder: "_Builder", person, account_id: str, amount: float) -> None:
@@ -558,7 +1040,16 @@ def _pay_mortgage_at_maturity(builder: "_Builder", person, event: s.MortgageMatu
     assert event.at.year is not None and event.at.month is not None and event.at.day is not None
     when = date(event.at.year, event.at.month, event.at.day)
     bridge = _owned_bridge(builder, person, event.bridge) if event.bridge is not None else None
-    home.mortgage.pay_at_maturity(when, interest_due=event.interest_due, cash_to_keep=event.cash_to_keep, bridge=bridge)
+    from ..housing.home import MortgagePayoffShortfall
+
+    try:
+        home.mortgage.pay_at_maturity(
+            when, interest_due=event.interest_due, cash_to_keep=event.cash_to_keep, bridge=bridge
+        )
+    except MortgagePayoffShortfall as error:
+        error.person_id = event.person
+        error.home_id = event.home
+        raise
 
 
 def _prepay_mortgage(builder: "_Builder", person, event: s.MortgagePrepaymentEvent) -> None:
@@ -567,11 +1058,19 @@ def _prepay_mortgage(builder: "_Builder", person, event: s.MortgagePrepaymentEve
     from ..housing.home import Home
 
     home = builder.built.items.get(event.home)
-    if not isinstance(home, Home) or home.person is not person or home.mortgage is None:
-        raise ValueError("A mortgage prepayment needs an existing mortgage on the borrower's home")
+    if not isinstance(home, Home) or home.person is not person:
+        raise ValueError("A mortgage prepayment requires a home owned by the borrower")
+    if home.sold or home.mortgage is None or home.mortgage.principal <= 0:
+        return
     assert event.at.year is not None and event.at.month is not None and event.at.day is not None
     when = date(event.at.year, event.at.month, event.at.day)
-    home.mortgage.prepay_surplus(when, cash_fraction=event.cash_fraction, cash_to_keep=event.cash_to_keep)
+    floor = event.cash_to_keep
+    if event.reserve_ontario_tax:
+        from ..tax.ontario_policy import cash_reserve_for_owner
+
+        tax_reserve = cash_reserve_for_owner(person)
+        floor = float(Decimal(str(floor)) + tax_reserve)
+    home.mortgage.prepay_surplus(when, cash_fraction=event.cash_fraction, cash_to_keep=floor)
 
 
 def _heloc_draw(builder: "_Builder", event: s.HelocDrawEvent) -> None:
@@ -596,7 +1095,14 @@ def _bridge_transaction(builder: "_Builder", person, event: s.DrawBridgeEvent | 
     if isinstance(event, s.DrawBridgeEvent):
         line.draw(event.amount, when=when)
     else:
-        line.repay(when, cash_to_keep=event.cash_to_keep)
+        from ..debt.bridge import BridgeRepaymentShortfall
+
+        try:
+            line.repay(when, cash_to_keep=event.cash_to_keep)
+        except BridgeRepaymentShortfall as error:
+            error.person_id = event.person
+            error.bridge_id = event.bridge
+            raise
 
 
 def _disability(person) -> None:

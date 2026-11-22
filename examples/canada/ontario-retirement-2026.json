@@ -1,0 +1,31 @@
+{
+  "spec_version": 1,
+  "meta": {
+    "name": "Synthetic Ontario retirement income",
+    "start_year": 2026,
+    "end_year": 2027,
+    "default_state": "DEFAULT",
+    "accepted_warnings": ["cash_not_invested", "no_health_coverage", "zero_growth", "fixed_growth"],
+    "ontario_retirement_tax": {
+      "province": "ON",
+      "freeze_2026": true,
+      "settlement_dates": {"2026": "2027-04-30", "2027": "2028-05-01"}
+    }
+  },
+  "withdrawal_order": ["bank", "brokerage", "tax_free", "pretax"],
+  "people": [
+    {
+      "id": "synthetic",
+      "name": "Synthetic Ontario resident",
+      "age": 71,
+      "birth": "1955-01",
+      "retirement_age": 65,
+      "spending": {"amount_annual": 24000, "growth_pct": 0},
+      "accounts": [
+        {"kind": "bank", "balance": 1000, "interest_pct": 0},
+        {"kind": "rrif", "owner_birth": "1955-01-01", "established_year": 2025,
+         "balance": 600000, "growth_pct": 0}
+      ]
+    }
+  ]
+}

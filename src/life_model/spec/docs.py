@@ -49,8 +49,8 @@ payment waterfall draws the members' bank accounts in member order.
 
 **Event timing.** `at: {age: A}` resolves through the engine's own `Person.get_year_at_age`
 (`start_year + (A - age)`: a person's `age` is their age during the first simulated year). Events
-fire in the engine's `events` stage, after the year's income and before the tax units settle the
-year, so their effects apply to the year they are dated. An event dated before `start_year` is an
+fire in the engine's `events` stage, after monthly income and before monthly bills. The calendar
+day orders events within the month. Cash reserve releases precede other events on the same day. An event dated before `start_year` is an
 error: put what already happened into the starting state (for example a marriage in
 `relationships`).
 """

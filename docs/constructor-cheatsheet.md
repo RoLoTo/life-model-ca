@@ -59,6 +59,11 @@ Each spec entry, the core class the builder constructs, the fields you must give
 | W4Spec | `W4` | — | `multiple_jobs=False`, `dependents_annual=0.0`, `other_income_annual=0.0`, `deductions_annual=0.0`, `extra_monthly=0.0` |
 | BankAccount (`kind: bank`) | `BankAccount` | — | `company='Bank'`, `type='Checking'`, `balance=0.0`, `interest_pct='economy'`, `primary=False`, `reserve=False`, `joint=False` |
 | CashReserveAccount (`kind: cash_reserve`) | `CashReserve` | `balance`, `release_on` | `name='Earmarked cash'` |
+| ForeignCashAccount (`kind: foreign_cash`) | `ForeignCash` | `name`, `currency`, `units`, `cad_mark` | — |
+| PrivateShareAccount (`kind: private_shares`) | `PrivateShareHolding` | `name`, `quantity`, `cad_basis`, `cad_price` | — |
+| PrivateOptionAccount (`kind: private_options`) | `PrivateOptionGrant` | `name`, `holding`, `quantity`, `strike_price`, `currency`, `expires_on` | `exercised=0`, `expired=0` |
+| PrivateShareIssuanceAccount (`kind: private_share_issuance`) | `PendingPrivateShares` | `name`, `holding`, `quantity`, `cad_basis`, `available_on` | — |
+| ShareSaleReceivableAccount (`kind: share_sale_receivable`) | `ShareSaleReceivable` | `name`, `bank`, `balance`, `currency`, `foreign_net`, `settles_on` | — |
 | FixedIncomeAccount (`kind: fixed_income`) | `FixedIncomeHolding` | `instrument`, `face`, `rate_pct` | `tax_exempt=False`, `early_withdrawal_penalty_months=0`, `reserve=True`, `accrued_interest=0.0` |
 | BrokerageAccount (`kind: brokerage`) | `BrokerageAccount` | — | `company='Brokerage'`, `growth_pct='economy'`, `reinvest_dividends=True`, `joint=False` |
 | Job401k (`kind: 401k`) | `Job401kAccount` | — | `pretax_balance=0.0`, `roth_balance=0.0`, `pretax_contrib_pct=0.0`, `roth_contrib_pct=0.0`, `growth_pct='economy'`, `bonus_is_plan_pay=False`, `match_vesting_years=0`, `company_match_pct=0.0`, `after_tax_contrib_pct=0.0`, `in_plan_roth_conversion=False` |
@@ -83,14 +88,17 @@ Each spec entry, the core class the builder constructs, the fields you must give
 | LifeInsurance (`kind: life`) | `LifeInsurance` | `policy`, `death_benefit`, `premium_monthly` | `premium_schedule='level'`, `group=False` |
 | GeneralInsurance (`kind: health`) | `Insurance` | `premium_annual`, `coverage_amount` | `company='Insurer'`, `deductible=0.0`, `elimination_months=3`, `benefits_taxable=False` |
 | Marketplace | `MarketplaceCoverage` | `slcsp_monthly` | — |
+| CanadianPensionSpec (`kind: cpp`) | `CanadianPension` | `starts`, `monthly_amount` | `pay_day=31`, `annual_index_pct=Decimal('0')`, `monthly_withholding=Decimal('0')` |
 | SocialSecurity | `SocialSecurity` | — | `spousal_benefit=False`, `fra_from_birth_year=False`, `earnings_test=True` |
 | Donation (`kind: donation`) | `Donation` | `charity`, `amount_annual` | `donation_type='cash'`, `tax_deductible=True`, `frequency_years=1` |
 | Child | `Child` | `name`, `birth_year` | `care_expenses_annual=0.0`, `interest_annual=0.0`, `dividends_annual=0.0` |
 | Dependent | `Dependent` | `name` | `relationship='parent'`, `gross_income_annual=0.0`, `support_annual=0.0`, `lives_with=False` |
 | SelfEmployment | `Job (kind='self_employed')` | `business` | `expenses_annual=0.0`, `growth_pct=0.0`, `sep_ira_contrib_pct=0.0`, `sstb=False` |
 | ContributionPlan | `ContributionPlan` | `account` | `max_out=False`, `source='bank'`, `months=12` |
-| SavingsPolicy | `SavingsPolicy` | `cash_floor`, `sweep_to` | — |
+| SavingsPolicy | `SavingsPolicy` | `cash_floor`, `sweep_to` | `reserve_ontario_tax=False` |
 | RothConversion | `RothConversionPolicy` | — | — |
+| CorporationSpec | `Corporation` | `id`, `name`, `shareholder`, `cash` | `fiscal_year_end_month=12`, `investment_interest_ytd=Decimal('0')`, `nerdtoh=Decimal('0')`, `dividends_paid_ytd=Decimal('0')`, `operating_profit_ytd=Decimal('0')` |
+| CorporateInterestAccountSpec | `CorporateInterestAccount` | `balance`, `annual_yield_pct` | — |
 
 ## Core constructors
 
@@ -133,7 +141,7 @@ The owner argument links the object to its owner (a `Person`, a `Job`, or the `m
 | `SocialSecurity` (life_model.insurance.social_security) | `owner` | `owner` | `claim_age=None`, `earnings_history=None`, `*pia_override_monthly=None`, `*fra_from_birth_year=False`, `*spousal_benefit=False`, `*earnings_test=False` |
 | `Donation` (life_model.charity.donation) | `person` | `person`, `charity_name`, `annual_amount` | `donation_type=DonationType.CASH`, `tax_deductible=True`, `frequency_years=1`, `start_year=None`, `end_year=None` |
 | `ContributionPlan` (life_model.policies) |  | `account` | `*amount_annual=None`, `*pct_of_pay=None`, `*source='bank'`, `*months=12`, `*bucket=None`, `*start=None`, `*end=None` |
-| `SavingsPolicy` (life_model.policies) |  | `*cash_floor` | `*sweep_to=None`, `*source_bank=None`, `*start_year=None`, `*end_year=None` |
+| `SavingsPolicy` (life_model.policies) |  | `*cash_floor` | `*sweep_to=None`, `*source_bank=None`, `*start_year=None`, `*end_year=None`, `*reserve_ontario_tax=False` |
 | `RothConversionPolicy` (life_model.policies) |  | — | `*fill_bracket_pct=None`, `*amount_annual=None`, `*source=None`, `*target=None`, `*until_age=None` |
 | `Child` (life_model.dependents.child) | `person` | `person`, `name`, `birth_year` | `*care_expenses_annual=0.0`, `*interest_annual=0.0`, `*dividends_annual=0.0`, `*cost_annual=None`, `*college_cost_annual=None`, `*birth_month=None` |
 

@@ -26,6 +26,7 @@ the state); retired jobs are omitted.
 
 import re
 from datetime import date
+from decimal import Decimal
 from typing import Any, Literal, cast
 
 from ..account.bank import COMPOUNDING_PERIODS
@@ -140,10 +141,56 @@ class _Extractor:
             meta=self.meta(),
             economy=self.economy(),
             people=person_specs,
+            corporations=self.corporations(),
             relationships=self.relationships(people),
             withdrawal_order=self.withdrawal_order(),
             events=self.events(),
         )
+
+    def corporations(self) -> list[s.CorporationSpec]:
+        from dataclasses import asdict
+
+        from ..canada.corporation import Corporation
+
+        entries = []
+        for corp in self.model.agents:
+            if not isinstance(corp, Corporation) or corp.shareholder is None:
+                continue
+            prior = corp.payroll_ytd.get(self.start)
+            fiscal_year = corp.fiscal_year(date(self.start, self.model.month, 1))
+            entries.append(
+                s.CorporationSpec(
+                    id=self.item_id(corp),
+                    name=corp.name,
+                    shareholder=self.pid(corp.shareholder),
+                    cash=corp.cash,
+                    fiscal_year_end_month=corp.fiscal_year_end_month,
+                    investments=s.CorporateInterestAccountSpec(
+                        balance=corp.investments.value, annual_yield_pct=corp.investments.annual_yield_pct
+                    )
+                    if corp.investments is not None
+                    else None,
+                    investment_interest_ytd=corp.investment_interest.get(fiscal_year, Decimal(0)),
+                    nerdtoh=corp.nerdtoh,
+                    dividends_paid_ytd=corp.dividends_paid.get(fiscal_year, Decimal(0)),
+                    dividend_refunds={
+                        year: s.CorporateDividendRefundSpec(amount=claim.amount, due=claim.due)
+                        for year, claim in corp.dividend_refunds.items()
+                    },
+                    operating_balances={
+                        key: s.CorporateOperatingBalance(amount=b.amount, due=b.due)
+                        for key, b in corp.operating_balances.items()
+                    },
+                    payables={
+                        key: s.CorporatePayableSpec(amount=p.amount, due=p.due, redeem_investments=p.redeem_investments)
+                        for key, p in corp.payables.items()
+                        if not p.paid
+                    },
+                    payroll_ytd=s.CorporatePayrollYTD(**asdict(prior)) if prior is not None else None,
+                    operating_profit_ytd=corp.operating_profit.get(fiscal_year, Decimal(0)),
+                )
+            )
+        return _sorted(entries)
 
     def withdrawal_order(self) -> list | None:
         from ..people.family import Family
@@ -156,7 +203,19 @@ class _Extractor:
 
     def meta(self) -> s.Meta:
         src = self.source_meta
+        tax = src.ontario_retirement_tax if src is not None else None
+        policy = getattr(self.model, "income_tax_policy", None)
+        if self.stepped and tax is not None:
+            outstanding = {}
+            for entry in policy.tax_settlements():
+                balance = entry.balance - entry.amount_settled
+                if balance and entry.tax_year < self.start:
+                    outstanding[entry.tax_year] = s.OpeningOntarioTaxBalance(
+                        balance=balance, settles_on=entry.settlement
+                    )
+            tax = tax.model_copy(update={"opening_balances": outstanding})
         return s.Meta(
+            ontario_retirement_tax=tax,
             name=src.name if src is not None else "household",
             description=src.description if src is not None else None,
             as_of=src.as_of if src is not None else None,
@@ -198,6 +257,23 @@ class _Extractor:
         if stochastic:
             values["stochastic"] = s.StochasticEconomy(**stochastic)
         return s.Economy(**values) if values else None
+
+    def canadian_pensions(self, person) -> list[s.CanadianPensionSpec]:
+        from ..canada.pensions import CanadianPension
+
+        pensions = (
+            s.CanadianPensionSpec(
+                kind=pension.kind,
+                starts=_ym(pension.starts),
+                monthly_amount=pension.monthly_amount,
+                annual_index_pct=pension.annual_index_pct,
+                monthly_withholding=pension.monthly_withholding,
+                pay_day=pension.pay_day,
+            )
+            for pension in self.model.agents
+            if isinstance(pension, CanadianPension) and pension.owner is person
+        )
+        return sorted(pensions, key=lambda pension: pension.kind)
 
     def person(self, person) -> s.Person:
         pid = self.pid(person)
@@ -248,9 +324,12 @@ class _Extractor:
             spending=self.spending(person.spending),
             jobs=jobs,
             accounts=_sorted(self.accounts(person, job_ids), ACCOUNT_KIND_ORDER),
+            tfsa_room=self.tfsa_room(person),
+            rrsp_room=self.rrsp_room(person),
             debts=_sorted(self.debts(person, housing), DEBT_KIND_ORDER),
             housing=_sorted(housing, HOUSING_KIND_ORDER),
             insurance=_sorted(self.insurance(person), INSURANCE_KIND_ORDER),
+            canadian_pensions=self.canadian_pensions(person),
             social_security=self.social_security(person, pid),
             healthcare=self.healthcare(person),
             giving=_sorted(self.giving(person)),
@@ -353,6 +432,7 @@ class _Extractor:
                 source_bank=self.item_id(policy.source_bank) if policy.source_bank is not None else None,
                 start_year=policy.start_year,
                 end_year=policy.end_year,
+                reserve_ontario_tax=policy.reserve_ontario_tax,
             )
         rc = person.roth_conversion_policy
         if rc is not None:
@@ -498,9 +578,46 @@ class _Extractor:
 
     # --- accounts ---
 
+    def rrsp_room(self, person):
+        room = next(
+            (
+                account.room
+                for account in person.canadian_deferred
+                if account.kind == "RRSP" and account.room is not None
+            ),
+            None,
+        )
+        if room is None:
+            return None
+        year, month = self._first_period()
+        available = room.available
+        if month == 1 and year > room.model.start_year and year not in room.opening_by_year:
+            available += room.annual_additions.get(year, 0)
+        return s.CanadianRRSPRoom(
+            available=available, annual_additions=room.annual_additions, deduction_limits=room.deduction_limits
+        )
+
+    def tfsa_room(self, person):
+        if not person.tfsas:
+            return None
+        room = person.tfsas[0].room
+        year, month = self._first_period()
+        available, restore = room.available, room.restore_next_year
+        if month == 1 and year > room.model.start_year and year not in room.opening_by_year:
+            if year not in room.annual_limits:
+                raise ValueError(f"Need the {year} TFSA limit to rebase this household")
+            available += room.annual_limits[year] + restore
+            restore = 0
+        return s.CanadianTFSARoom(
+            available=float(available), annual_limits=room.annual_limits, withdrawals_to_restore=float(restore)
+        )
+
     def accounts(self, person, job_ids: dict[int, str]) -> list:
         from ..account.cash_reserve import CashReserve
+        from ..account.foreign_cash import ForeignCash
         from ..account.inherited import InheritedPretaxAccount
+        from ..account.private_options import PendingPrivateShares, PrivateOptionGrant
+        from ..account.private_shares import PrivateShareHolding, ShareSaleReceivable
         from ..insurance.annuity import AnnuityType
 
         cfg = self.config
@@ -525,6 +642,28 @@ class _Extractor:
                     joint=getattr(bank, "joint_owner", None) is not None,
                 )
             )
+        foreign = [
+            account for account in self.model.agents if isinstance(account, ForeignCash) and account.owner is person
+        ]
+        pool = foreign[0].tax_pool if foreign else None
+        units_left, basis_left = (pool.units, pool.cad_basis) if pool is not None else (0, 0)
+        for account in foreign:
+            basis = account.opening_cad_basis
+            if pool is not None:
+                basis = (basis_left * account.units / units_left).quantize(Decimal(".01")) if units_left else Decimal(0)
+                units_left -= account.units
+                basis_left -= basis
+            out.append(
+                s.ForeignCashAccount(
+                    kind="foreign_cash",
+                    id=self.item_id(account),
+                    name=account.name,
+                    currency=account.currency,
+                    units=account.units,
+                    cad_mark=account.cad_mark,
+                    opening_cad_basis=basis,
+                )
+            )
         for account in self.model.agents_by_type.get(CashReserve, ()):
             if account.owner is person and account.balance > 0:
                 out.append(
@@ -534,6 +673,70 @@ class _Extractor:
                         name=account.name,
                         balance=account.balance,
                         release_on=account.release_on,
+                    )
+                )
+        pending_by_holding: dict[int, list[PendingPrivateShares]] = {}
+        for agent in self.model.agents:
+            if isinstance(agent, PendingPrivateShares) and agent.owner is person and not agent.issued:
+                pending_by_holding.setdefault(agent.holding.unique_id, []).append(agent)
+        for agent in self.model.agents:
+            if isinstance(agent, PrivateShareHolding) and agent.owner is person:
+                quantity = agent.issued_quantity
+                basis = agent.pool.cost_for(quantity)
+                out.append(
+                    s.PrivateShareAccount(
+                        kind="private_shares",
+                        id=self.item_id(agent),
+                        name=agent.name,
+                        quantity=quantity,
+                        cad_basis=basis,
+                        cad_price=agent.cad_price,
+                    )
+                )
+                for pending in pending_by_holding.get(agent.unique_id, ()):
+                    quantity += pending.quantity
+                    total_basis = agent.pool.cost_for(quantity)
+                    out.append(
+                        s.PrivateShareIssuanceAccount(
+                            kind="private_share_issuance",
+                            id=self.item_id(pending),
+                            name=pending.name,
+                            holding=self.item_id(agent),
+                            quantity=pending.quantity,
+                            cad_basis=total_basis - basis,
+                            available_on=pending.available_on,
+                        )
+                    )
+                    basis = total_basis
+            if isinstance(agent, ShareSaleReceivable) and agent.owner is person and not agent.settled:
+                out.append(
+                    s.ShareSaleReceivableAccount(
+                        kind="share_sale_receivable",
+                        id=self.item_id(agent),
+                        name=agent.name,
+                        bank=self.item_id(agent.bank),
+                        balance=round(agent.balance, 2),
+                        currency=agent.currency,
+                        foreign_net=agent.foreign_net,
+                        settles_on=agent.settles_on,
+                        settlement_fx=agent.settlement_fx,
+                    )
+                )
+        for agent in self.model.agents:
+            if isinstance(agent, PrivateOptionGrant) and agent.owner is person:
+                out.append(
+                    s.PrivateOptionAccount(
+                        kind="private_options",
+                        id=self.item_id(agent),
+                        name=agent.name,
+                        holding=self.item_id(agent.holding),
+                        quantity=agent.quantity,
+                        strike_price=agent.strike_price,
+                        currency=agent.currency,
+                        expires_on=agent.expires_on,
+                        exercised=agent.exercised,
+                        expired=agent.expired,
+                        blackouts=[s.OptionBlackout(start=start, end=end) for start, end in agent.blackouts],
                     )
                 )
         for holding in person.fixed_income_holdings:
@@ -623,6 +826,33 @@ class _Extractor:
                     reinvest_dividends=account.reinvest_dividends,
                     joint=getattr(account, "joint_owner", None) is not None,
                     **_invest(account),
+                )
+            )
+        for account in person.canadian_deferred:
+            common = {
+                "id": self.item_id(account),
+                "balance": account.balance,
+                "growth_pct": _growth(account._growth_rate_override),
+                "owner_birth": account.owner_birth,
+            }
+            if account.rrif_since is None:
+                out.append(s.RRSP(kind="rrsp", convert_at_maturity=account.convert_at_maturity, **common))
+            else:
+                out.append(
+                    s.RRIF(
+                        kind="rrif",
+                        established_year=account.rrif_since,
+                        minimum_age_birth=account.minimum_age_birth,
+                        **common,
+                    )
+                )
+        for account in person.tfsas:
+            out.append(
+                s.TFSA(
+                    kind="tfsa",
+                    id=self.item_id(account),
+                    balance=account.balance,
+                    growth_pct=_growth(account._growth_rate_override),
                 )
             )
         for account in person.traditional_iras:
@@ -1253,6 +1483,16 @@ def _invest(account) -> dict:
 
 def spec_from_model(model) -> s.HouseholdSpec:
     """Read a :class:`~life_model.spec.schema.HouseholdSpec` off ``model`` (see the module docstring)."""
+    from ..account.private_options import PendingPrivateShares
+
+    if any(isinstance(account, PendingPrivateShares) and account.unrecognized_option for account in model.agents):
+        raise ValueError("Resume a funded but unrecognized option exercise by replaying its original scenario")
+    if any(getattr(item, "ontario_rental", None) and not item.sold for item in model.agents):
+        raise ValueError("Resume an active Ontario rental by replaying the original scenario")
+    policy = getattr(model, "income_tax_policy", None)
+    pool = getattr(policy, "foreign_cash_pool", None)
+    if pool is not None and pool.realized.get(model.year):
+        raise ValueError("Replay USD realizations in the opening tax year before using an extracted snapshot")
     return _Extractor(model).run()
 
 

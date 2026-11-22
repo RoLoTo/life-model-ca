@@ -93,12 +93,16 @@ class BuiltHousehold:
 
 ACCOUNT_KIND_ORDER = (
     "bank",
+    "foreign_cash",
     "cash_reserve",
     "fixed_income",
     "401k",
     "brokerage",
     "traditional_ira",
     "roth_ira",
+    "rrsp",
+    "rrif",
+    "tfsa",
     "hsa",
     "inherited_pretax",
     "pension",
@@ -194,6 +198,7 @@ def canonical(spec: s.HouseholdSpec) -> s.HouseholdSpec:
                 update={
                     "jobs": _sorted(p.jobs),
                     "accounts": _sorted([lots_in_acquisition_order(a) for a in p.accounts], ACCOUNT_KIND_ORDER),
+                    "canadian_pensions": sorted(p.canadian_pensions, key=lambda pension: pension.kind),
                     "debts": _sorted(p.debts, DEBT_KIND_ORDER),
                     "housing": _sorted(p.housing, HOUSING_KIND_ORDER),
                     "insurance": _sorted(p.insurance, INSURANCE_KIND_ORDER),
@@ -203,7 +208,9 @@ def canonical(spec: s.HouseholdSpec) -> s.HouseholdSpec:
                 }
             )
         )
-    return spec.model_copy(update={"people": people, "events": _sorted(spec.events)})
+    return spec.model_copy(
+        update={"people": people, "corporations": _sorted(spec.corporations), "events": _sorted(spec.events)}
+    )
 
 
 # --- Model creation ------------------------------------------------------------------------------
@@ -390,6 +397,8 @@ class _Builder:
             model, withdrawal_order=None if spec.withdrawal_order is None else tuple(spec.withdrawal_order)
         )
         self.built = BuiltHousehold(model=model, family=self.family, spec=spec)
+        self.tfsa_rooms = {}
+        self.rrsp_rooms = {}
 
     # --- helpers ---
 
@@ -610,6 +619,66 @@ class _Builder:
                 joint_owner=joint_owner,
                 joint_primary=account.primary and joint_owner is not None,
             )
+        if kind == "foreign_cash":
+            from ..account.foreign_cash import ForeignCash
+
+            return ForeignCash(
+                person,
+                name=account.name,
+                currency=account.currency,
+                units=account.units,
+                cad_mark=account.cad_mark,
+                opening_cad_basis=account.opening_cad_basis,
+            )
+        if kind == "private_shares":
+            from ..account.private_shares import PrivateShareHolding
+
+            return PrivateShareHolding(
+                person,
+                name=account.name,
+                quantity=account.quantity,
+                cad_basis=account.cad_basis,
+                cad_price=account.cad_price,
+            )
+        if kind == "private_options":
+            from ..account.private_options import PrivateOptionGrant
+
+            return PrivateOptionGrant(
+                person,
+                holding=self.built.items[account.holding],
+                name=account.name,
+                quantity=account.quantity,
+                strike_price=account.strike_price,
+                currency=account.currency,
+                expires_on=account.expires_on,
+                blackouts=tuple((item.start, item.end) for item in account.blackouts),
+                exercised=account.exercised,
+                expired=account.expired,
+            )
+        if kind == "private_share_issuance":
+            from ..account.private_options import PendingPrivateShares
+
+            return PendingPrivateShares(
+                person,
+                holding=self.built.items[account.holding],
+                name=account.name,
+                quantity=account.quantity,
+                cad_basis=account.cad_basis,
+                available_on=account.available_on,
+            )
+        if kind == "share_sale_receivable":
+            from ..account.private_shares import ShareSaleReceivable
+
+            return ShareSaleReceivable(
+                person,
+                self.built.items[account.bank],
+                name=account.name,
+                balance=account.balance,
+                currency=account.currency,
+                foreign_net=account.foreign_net,
+                settlement_fx=account.settlement_fx,
+                settles_on=account.settles_on,
+            )
         if kind == "fixed_income":
             from ..account.fixed_income import FixedIncomeHolding
 
@@ -692,6 +761,52 @@ class _Builder:
                 reinvest_dividends=account.reinvest_dividends,
                 joint_owner=joint_owner,
                 **invest,
+            )
+        if kind in ("rrsp", "rrif"):
+            from ..account.canadian import CanadianRetirementAccount, RRSPContributionRoom
+
+            room = None
+            data = person_spec.rrsp_room
+            if kind == "rrsp" and data is not None:
+                if person.unique_id not in self.rrsp_rooms:
+                    self.rrsp_rooms[person.unique_id] = RRSPContributionRoom(
+                        person,
+                        available=data.available,
+                        annual_additions=data.annual_additions,
+                        deduction_limits=data.deduction_limits,
+                    )
+                room = self.rrsp_rooms[person.unique_id]
+            return CanadianRetirementAccount(
+                person,
+                balance=account.balance,
+                growth_pct=_growth(account.growth_pct),
+                owner_birth=account.owner_birth,
+                convert_at_maturity=account.convert_at_maturity if kind == "rrsp" else False,
+                established_rrif_year=account.established_year if kind == "rrif" else None,
+                minimum_age_birth=account.minimum_age_birth if kind == "rrif" else None,
+                room=room,
+            )
+        if kind == "tfsa":
+            from decimal import Decimal
+
+            from ..account.canadian import CanadianTFSA, TFSAContributionRoom
+
+            if person_spec.tfsa_room is None:
+                raise ValueError(f"{person_spec.id}: a TFSA requires owner-level tfsa_room")
+            if person.unique_id not in self.tfsa_rooms:
+                data = person_spec.tfsa_room
+                room = TFSAContributionRoom(
+                    person,
+                    opening_room=Decimal(str(data.available)),
+                    annual_limits={year: Decimal(str(value)) for year, value in data.annual_limits.items()},
+                )
+                room.restore_next_year = Decimal(str(data.withdrawals_to_restore))
+                self.tfsa_rooms[person.unique_id] = room
+            return CanadianTFSA(
+                person,
+                balance=account.balance,
+                growth_pct=_growth(account.growth_pct),
+                room=self.tfsa_rooms[person.unique_id],
             )
         if kind == "traditional_ira":
             from ..account.traditional_IRA import TraditionalIRA
@@ -1133,6 +1248,7 @@ class _Builder:
                 source_bank=self.built.items[savings.source_bank] if savings.source_bank is not None else None,
                 start_year=savings.start_year,
                 end_year=savings.end_year,
+                reserve_ontario_tax=savings.reserve_ontario_tax,
             )
         if p.roth_conversion is not None:
             rc = p.roth_conversion
@@ -1155,7 +1271,51 @@ class _Builder:
 
     # --- driver ---
 
+    def build_corporation(self, spec: s.CorporationSpec):
+        from ..canada.corporate_investment import CorporateInterestAccount
+        from ..canada.corporation import Corporation, DividendRefund, OperatingBalance, Payable
+        from ..canada.payroll import YearToDate
+
+        corp = Corporation(
+            self.model,
+            spec.name,
+            spec.cash,
+            shareholder=self.person(spec.shareholder),
+            fiscal_year_end_month=spec.fiscal_year_end_month,
+        )
+        corp.spec_id = spec.id
+        corp.payables = {
+            key: Payable(facts.amount, facts.due, redeem_investments=facts.redeem_investments)
+            for key, facts in spec.payables.items()
+        }
+        corp.operating_balances = {
+            key: OperatingBalance(facts.amount, facts.due) for key, facts in spec.operating_balances.items()
+        }
+        if spec.payroll_ytd is not None:
+            corp.payroll_ytd[self.model.start_year] = YearToDate(**spec.payroll_ytd.model_dump())
+        opening_day = date(self.model.start_year, self.model.start_month, 1)
+        fiscal_year = corp.fiscal_year(opening_day)
+        if spec.operating_profit_ytd:
+            corp.operating_profit[fiscal_year] = spec.operating_profit_ytd
+        if spec.investment_interest_ytd:
+            corp.investment_interest[fiscal_year] = spec.investment_interest_ytd
+        corp.nerdtoh = spec.nerdtoh
+        if spec.dividends_paid_ytd:
+            corp.dividends_paid[fiscal_year] = spec.dividends_paid_ytd
+        corp.dividend_refunds = {
+            year: DividendRefund(facts.amount, facts.due) for year, facts in spec.dividend_refunds.items()
+        }
+        if spec.investments is not None:
+            investment = spec.investments
+            corp.investments = CorporateInterestAccount(
+                corp, balance=investment.balance, annual_yield_pct=investment.annual_yield_pct
+            )
+        self.built.items[spec.id] = corp
+        return corp
+
     def run(self) -> BuiltHousehold:
+        from ..canada.corporation import fiscal_year_end
+        from ..canada.pensions import CanadianPension
         from ..dependents.child import Child
         from ..healthcare import LongTermCare, MedicalCosts, Medicare
         from . import events as ev
@@ -1188,16 +1348,16 @@ class _Builder:
             self._register(p, "accounts", i, item, self.build_account(self.person(p.id), p, item))
         for p, i, job in each("jobs", lambda j: j.stock_plan is not None):
             self.build_stock_plan(self.built.items[job.id or f"{p.id}.jobs[{i}]"], job.stock_plan)
-        late = ("bank", "401k", "cash_reserve", *LATE_ACCOUNT_KINDS)
+        option_kinds = ("private_options", "private_share_issuance")
+        late = ("bank", "401k", "cash_reserve", *LATE_ACCOUNT_KINDS, *option_kinds)
         for p, i, item in each("accounts", lambda a: a.kind not in late):
             self._register(p, "accounts", i, item, self.build_account(self.person(p.id), p, item))
-        secured_debts = ("heloc", "bridge_line")
-        for p, i, item in each("debts", lambda d: d.kind not in secured_debts):
+        for p, i, item in each("debts", lambda d: d.kind not in ("heloc", "bridge_line")):
             self._register(p, "debts", i, item, self.build_debt(self.person(p.id), item))
         for p, i, item in each("housing"):
             self._register(p, "housing", i, item, self.build_housing(self.person(p.id), item))
-        # Secured lines follow the homes they reference.
-        for p, i, item in each("debts", lambda d: d.kind in secured_debts):
+        # Home equity lines are secured by a home, so they follow housing.
+        for p, i, item in each("debts", lambda d: d.kind in ("heloc", "bridge_line")):
             self._register(p, "debts", i, item, self.build_debt(self.person(p.id), item))
         for p, i, item in each("insurance"):
             self._register(p, "insurance", i, item, self.build_insurance(self.person(p.id), item))
@@ -1274,11 +1434,77 @@ class _Builder:
                 # the run; one dated in the start year is logged as that year's event.
                 self.marry(head, spouse, marriage.filing_status, log_event=marriage.year == self.model.start_year)
 
+        grants_and_issues = []
+        for p, i, item in each("accounts", lambda a: a.kind in option_kinds):
+            agent = self.build_account(self.person(p.id), p, item)
+            self._register(p, "accounts", i, item, agent)
+            if item.kind == "private_options":
+                if agent.remaining and item.expires_on.year <= self.model.end_year:
+                    grants_and_issues.append((agent.expiry_event(), False))
+            elif item.available_on.year <= self.model.end_year:
+                grants_and_issues.append((agent.issuance_event(), True))
+
+        corporations = [self.build_corporation(item) for item in spec.corporations]
+        corporate_obligations = [
+            corporation.settlement_event(key, payable.due)
+            for corporation in corporations
+            for key, payable in sorted(corporation.payables.items())
+            if payable.due.year <= self.model.end_year
+        ]
+        corporate_obligations.extend(
+            corporation.operating_settlement_event(key, item.due, item.amount)
+            for corporation in corporations
+            for key, item in sorted(corporation.operating_balances.items())
+            if item.due.year <= self.model.end_year
+        )
+        corporate_obligations.extend(
+            corporation.investments.interest_event(fiscal_year_end(year, month))
+            for corporation in corporations
+            if corporation.investments is not None
+            for year in range(self.model.start_year, self.model.end_year + 1)
+            for month in range(self.model.start_month if year == self.model.start_year else 1, 13)
+        )
+        corporate_obligations.extend(
+            corporation.dividend_refund_event(year, claim.due)
+            for corporation in corporations
+            for year, claim in sorted(corporation.dividend_refunds.items())
+            if claim.due.year <= self.model.end_year
+        )
+        pensions = [
+            CanadianPension(
+                self.person(p.id),
+                kind=item.kind,
+                starts=tuple(map(int, item.starts.split("-"))),
+                monthly_amount=item.monthly_amount,
+                annual_index_pct=item.annual_index_pct,
+                monthly_withholding=item.monthly_withholding,
+                pay_day=item.pay_day,
+            )
+            for p in people
+            for item in p.canadian_pensions
+        ]
+        scheduled = corporate_obligations + [event for pension in pensions for event in pension.payment_events()]
         life_events = ev.compile_events(self, timing)
-        if life_events:
+        if scheduled:
+            life_events = sorted(
+                [*scheduled, *life_events],
+                key=lambda event: (
+                    event.year,
+                    event.month or 0,
+                    event.day or 1,
+                    getattr(event, "same_day_priority", 0),
+                ),
+            )
+        if life_events or grants_and_issues:
             schedule = self.event_schedule()
-            for life_event in life_events:
-                schedule.add(life_event)
+            for event in life_events:
+                schedule.add(event)
+            for event, before_same_day in grants_and_issues:
+                schedule.add(event, before_same_day=before_same_day)
+        for p, i, item in each("accounts", lambda a: a.kind == "share_sale_receivable"):
+            receipt = self.built.items[item.id or f"{p.id}.accounts[{i}]"]
+            if receipt.settles_on.year <= self.model.end_year:
+                self.event_schedule().add(receipt.settlement_event(), before_same_day=True)
         for p, i, item in each("accounts", lambda a: a.kind == "cash_reserve"):
             self._register(p, "accounts", i, item, self.build_account(self.person(p.id), p, item))
         return self.built
@@ -1341,6 +1567,28 @@ def populate_model(model: LifeModel, spec: s.HouseholdSpec, *, check: bool = Tru
 def _populate(model: LifeModel, spec: s.HouseholdSpec) -> BuiltHousehold:
     built = _Builder(model, canonical(spec)).run()
     model.household = built
+    if spec.meta.ontario_retirement_tax is not None:
+        from ..tax.ontario_policy import OntarioRetirementPolicy
+
+        if len(built.people) != 1:
+            raise ValueError("Ontario retirement tax currently requires a single taxpayer")
+        settings = spec.meta.ontario_retirement_tax
+        index = settings.indexation
+        OntarioRetirementPolicy(
+            model,
+            next(iter(built.people.values())),
+            settings.settlement_dates,
+            freeze_2026=settings.freeze_2026,
+            freeze_after=settings.freeze_after,
+            indexation=(index.base_year, index.annual_pct) if index is not None else None,
+            estimate_registered_withholding=settings.estimate_registered_withholding,
+            track_foreign_cash_gains=settings.track_foreign_cash_gains,
+            schedule=built.life_events,
+            oas_recovery_thresholds=settings.oas_recovery_thresholds,
+            opening_balances={
+                year: (item.balance, item.settles_on) for year, item in settings.opening_balances.items()
+            },
+        )
     return built
 
 

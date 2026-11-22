@@ -569,6 +569,8 @@ class _SpecChecker:
         return ids
 
     def check_ids(self) -> None:
+        from ..canada.corporation import fiscal_year_end
+
         seen: dict[str, str] = {}
 
         def claim(identifier: str | None, path: str) -> None:
@@ -584,6 +586,18 @@ class _SpecChecker:
             for collection in ("jobs", "accounts", "debts", "housing", "insurance", "giving", "children"):
                 for j, item in enumerate(getattr(p, collection)):
                     claim(item.id, f"people[{i}].{collection}[{j}].id")
+        for i, corp in enumerate(self.spec.corporations):
+            path = f"corporations[{i}]"
+            claim(corp.id, f"{path}.id")
+            self.check_person_ref(corp.shareholder, f"{path}.shareholder")
+            for name in ("payables", "operating_balances", "dividend_refunds"):
+                for key, balance in getattr(corp, name).items():
+                    if (balance.due.year, balance.due.month) < (self.start, self.start_month):
+                        self.error(f"{path}.{name}.{key}.due", "set an opening balance's settlement from the run start")
+            for year, refund in corp.dividend_refunds.items():
+                end = fiscal_year_end(year, corp.fiscal_year_end_month)
+                if (end.year, end.month) >= (self.start, self.start_month) or refund.due <= end:
+                    self.error(f"{path}.dividend_refunds.{year}", "refund must follow a completed fiscal year")
         for i, event in enumerate(self.spec.events):
             claim(event.id, f"events[{i}].id")
             for collection, item in _event_items(event):
@@ -624,6 +638,8 @@ class _SpecChecker:
         spouse_at_start = self.start_spouses()
         for i, p in enumerate(self.spec.people):
             path = f"people[{i}]"
+            if p.canadian_pensions:
+                self.check_canadian_pensions(p, path)
             banks = [a for a in p.accounts if a.kind == "bank"]
             spouse = self.people.get(spouse_at_start.get(p.id, ""))
             joint_banks = [
@@ -761,6 +777,21 @@ class _SpecChecker:
                 apath = f"{path}.accounts[{j}]"
                 self.check_account_refs(account, apath, job_ids, child_ids)
                 self.check_account_rules(account, apath)
+                if isinstance(account, s.PrivateOptionAccount | s.PrivateShareIssuanceAccount) and not any(
+                    isinstance(item, s.PrivateShareAccount) and item.id == account.holding for item in p.accounts
+                ):
+                    self.error(f"{apath}.holding", "must be the owner's opening private share holding")
+                if isinstance(account, s.PrivateShareIssuanceAccount) and (
+                    account.available_on.year,
+                    account.available_on.month,
+                ) < (self.start, self.start_month):
+                    self.error(f"{apath}.available_on", "opening shares cannot be released before the run")
+                if isinstance(account, s.ShareSaleReceivableAccount):
+                    target = next((item for item in p.accounts if item.id == account.bank), None)
+                    self.check_sale_settlement(target, account.currency, account.settlement_fx, apath)
+                    month = account.settles_on.year, account.settles_on.month
+                    if month < (self.start, self.start_month):
+                        self.error(f"{apath}.settles_on", "opening share proceeds cannot settle before the run")
             self.check_policies(p, path)
             self.check_payroll(p, path)
             for e_index, event in enumerate(self.spec.events):
@@ -948,7 +979,19 @@ class _SpecChecker:
                 )
                 continue
             kind = account.kind
-            if kind in ("pension", "annuity", "inherited_pretax", "trust", "daf", "cash_reserve"):
+            if kind in (
+                "pension",
+                "annuity",
+                "inherited_pretax",
+                "trust",
+                "daf",
+                "cash_reserve",
+                "private_shares",
+                "share_sale_receivable",
+                "private_options",
+                "private_share_issuance",
+                "foreign_cash",
+            ):
                 self.error(f"{ppath}.account", f"recurring contributions to a {kind} account are not supported.")
             if kind == "401k":
                 if plan.source != "payroll":
@@ -995,6 +1038,8 @@ class _SpecChecker:
                     )
                 elif not isinstance(source, s.BankAccount) or source.reserve:
                     self.error(f"{path}.savings_policy.source_bank", "the source must be a non-reserve bank account.")
+            if policy.reserve_ontario_tax and self.spec.meta.ontario_retirement_tax is None:
+                self.error(f"{path}.savings_policy.reserve_ontario_tax", "requires the Ontario return policy")
         rc = p.roth_conversion
         if rc is not None:
             self.check_conversion_refs(accounts, rc.source, rc.target, f"{path}.roth_conversion")
@@ -1251,10 +1296,40 @@ class _SpecChecker:
         base = self.resolve(anchor.at, anchor.person, by_id, (*stack, relative.after))
         return None if base is None else base + relative.years
 
+    def check_canadian_pensions(self, person, path: str) -> None:
+        if self.spec.meta.ontario_retirement_tax is None:
+            self.error(f"{path}.canadian_pensions", "Canadian pensions need the Ontario return policy")
+        if person.birth is None:
+            birth_year, birth_month = self.start - person.age, 1
+        else:
+            birth_year, birth_month = map(int, person.birth.split("-"))
+        programs: set[str] = set()
+        for i, pension in enumerate(person.canadian_pensions):
+            pension_path = f"{path}.canadian_pensions[{i}]"
+            if pension.kind in programs:
+                self.error(f"{pension_path}.kind", "supply a single monthly benefit per program")
+            programs.add(pension.kind)
+            minimum = 60 if pension.kind == "cpp" else 65
+            starts = tuple(map(int, pension.starts.split("-")))
+            if starts <= (birth_year + minimum, birth_month):
+                self.error(f"{pension_path}.starts", f"start after the month when the claimant turns {minimum}")
+
     def check_events(self) -> None:
+        from ..canada.corporation import fiscal_year_end
+
         by_id = {e.id: e for e in self.spec.events if e.id is not None}
         item_ids = self.item_ids()
+        funded_homes = {
+            event.home.id
+            for event in self.spec.events
+            if isinstance(event, s.BuyHomeEvent)
+            and event.cash_funding is not None
+            and event.cash_funding.mortgage_limit > 0
+        }
         min_claim = self.config.social_security.min_early_retirement_age
+        corporations = {corp.id: corp for corp in self.spec.corporations}
+        payroll_months: set[tuple] = set()
+        corporate_tax_years: set[tuple] = set()
         for i, event in enumerate(self.spec.events):
             path = f"events[{i}]"
             self.check_person_ref(event.person, f"{path}.person")
@@ -1304,15 +1379,44 @@ class _SpecChecker:
             if isinstance(event, s.MoveEvent):
                 if event.end_rental is not None and not is_kind(event.end_rental, s.Rental):
                     self.error(f"{path}.end_rental", f"unknown rental {event.end_rental!r}", code="unknown_reference")
-                if event.sell_home is not None and not is_kind(event.sell_home, s.Home):
-                    self.error(f"{path}.sell_home", f"unknown home {event.sell_home!r}", code="unknown_reference")
-            if isinstance(event, s.SellHomeEvent) and not is_kind(event.home, s.Home):
-                self.error(f"{path}.home", f"unknown home {event.home!r}", code="unknown_reference")
+                if event.sell_home is not None:
+                    if not is_kind(event.sell_home, s.Home):
+                        self.error(f"{path}.sell_home", f"unknown home {event.sell_home!r}", code="unknown_reference")
+                    if self.spec.meta.ontario_retirement_tax is not None:
+                        self.error(
+                            f"{path}.sell_home", "use a separate sell_home event with an Ontario residence designation"
+                        )
+            if isinstance(event, s.HomeValuationEvent):
+                target = item_ids.get(event.home)
+                if target is None or target[0] != event.person or not isinstance(target[2], s.Home):
+                    self.error(f"{path}.home", "must be a home owned by the person reporting the value")
+            if isinstance(event, s.ConvertHomeToOntarioRentalEvent):
+                target = item_ids.get(event.home)
+                if target is None or target[0] != event.person or not isinstance(target[2], s.Home):
+                    self.error(f"{path}.home", "must be a home owned by the taxpayer")
+                if self.spec.meta.ontario_retirement_tax is None:
+                    self.error(path, "rental conversion requires the Ontario return policy")
+            if isinstance(event, s.SellHomeEvent):
+                if not is_kind(event.home, s.Home):
+                    self.error(f"{path}.home", f"unknown home {event.home!r}", code="unknown_reference")
+                if event.canadian_principal_residence and event.canadian_rental_sale:
+                    self.error(path, "choose residence designation or taxable rental disposition")
+                if self.spec.meta.ontario_retirement_tax is not None and not (
+                    event.canadian_principal_residence or event.canadian_rental_sale
+                ):
+                    self.error(
+                        f"{path}.canadian_principal_residence",
+                        "Ontario home sales require an explicit fully exempt principal residence designation",
+                    )
+                if self.spec.meta.ontario_retirement_tax is None and (
+                    event.canadian_principal_residence or event.canadian_rental_sale
+                ):
+                    self.error(f"{path}.canadian_principal_residence", "requires the Ontario return policy")
             if isinstance(event, s.MortgageRenewalEvent | s.MortgageMaturityEvent | s.MortgagePrepaymentEvent):
                 target = item_ids.get(event.home)
                 if target is None or target[0] != event.person or not isinstance(target[2], s.Home):
                     self.error(f"{path}.home", "must be a home owned by the borrower", code="unknown_reference")
-                elif target[2].mortgage is None:
+                elif target[2].mortgage is None and event.home not in funded_homes:
                     operation = {
                         "renew_mortgage": "renew",
                         "pay_mortgage_at_maturity": "pay off",
@@ -1322,12 +1426,19 @@ class _SpecChecker:
                 elif (
                     isinstance(event, s.MortgageRenewalEvent)
                     and isinstance(event.prepayment_privilege, s.MortgagePrepaymentPrivilege)
+                    and target[2].mortgage is not None
                     and target[2].mortgage.extra_principal_monthly
                 ):
                     self.error(
                         f"{path}.prepayment_privilege",
                         "A lump-sum privilege cannot be combined with automatic extra principal",
                     )
+            if (
+                isinstance(event, s.MortgagePrepaymentEvent)
+                and event.reserve_ontario_tax
+                and self.spec.meta.ontario_retirement_tax is None
+            ):
+                self.error(f"{path}.reserve_ontario_tax", "requires the Ontario return policy")
             if isinstance(event, s.RefinanceEvent):
                 target = item_ids.get(event.debt, (None, None, None))[2]
                 if not isinstance(target, s.Home | s.CarLoan | s.StudentLoan):
@@ -1336,7 +1447,7 @@ class _SpecChecker:
                         f"unknown home or loan {event.debt!r} (a home with a mortgage, or a car / student loan)",
                         code="unknown_reference",
                     )
-                elif isinstance(target, s.Home) and target.mortgage is None:
+                elif isinstance(target, s.Home) and target.mortgage is None and event.debt not in funded_homes:
                     self.error(f"{path}.debt", f"home {event.debt!r} has no mortgage to refinance", code="invalid")
             if isinstance(event, s.HelocDrawEvent) and not is_kind(event.heloc, s.HomeEquityLine):
                 self.error(f"{path}.heloc", f"unknown home equity line {event.heloc!r}", code="unknown_reference")
@@ -1348,11 +1459,111 @@ class _SpecChecker:
                 bridge = item_ids.get(event.bridge)
                 if bridge is None or bridge[0] != event.person or not isinstance(bridge[2], s.BridgeLine):
                     self.error(f"{path}.bridge", "must be an approved bridge line owned by the borrower")
+            if isinstance(event, s.AddAccountEvent) and isinstance(event.account, s.ShareSaleReceivableAccount):
+                self.error(f"{path}.account", "use sell_private_shares to create a new unsettled claim")
+            if isinstance(event, s.AddAccountEvent) and isinstance(
+                event.account, s.PrivateOptionAccount | s.PrivateShareIssuanceAccount
+            ):
+                self.error(f"{path}.account", "option grants and previously acquired shares are opening positions")
+            if (
+                isinstance(event, s.AddAccountEvent)
+                and isinstance(event.account, s.RRIF)
+                and event.account.established_year != year
+            ):
+                self.error(f"{path}.account.established_year", "use the year of the RRIF opening event")
+            if isinstance(event, s.RegisteredCashEvent):
+                self.check_registered_cash_event(event, path, item_ids)
+            if isinstance(event, s.CorporateEvent):
+                corp = corporations.get(event.corporation)
+                if corp is None or corp.shareholder != event.person:
+                    self.error(f"{path}.corporation", "must be a corporation owned by the named shareholder")
+                if (
+                    isinstance(event, s.CorporateInvestmentTransferEvent)
+                    and corp is not None
+                    and corp.investments is None
+                ):
+                    self.error(path, "investment transfers require the corporation's interest-bearing account")
+                if isinstance(event, s.CorporatePayDividendEvent) and self.spec.meta.ontario_retirement_tax is None:
+                    self.error(path, "corporate dividends need the shareholder's Ontario return policy")
+                if isinstance(event, s.CorporatePayrollEvent):
+                    period = (event.corporation, event.at.year, event.at.month)
+                    if period in payroll_months:
+                        self.error(path, "regular corporate payroll supports one payday per month per corporation")
+                    payroll_months.add(period)
+                    if self.spec.meta.ontario_retirement_tax is None:
+                        self.error(path, "corporate payroll needs the shareholder's Ontario return policy")
+                if isinstance(event, s.CorporateIncomeTaxEvent):
+                    on = event.effective_date()
+                    if corp is not None and on != fiscal_year_end(on.year, corp.fiscal_year_end_month):
+                        self.error(
+                            f"{path}.at", "corporate income tax must accrue on the corporation's fiscal year-end"
+                        )
+                    tax_year = (event.corporation, event.at.year)
+                    if tax_year in corporate_tax_years:
+                        self.error(path, "corporate income tax can accrue once per fiscal year")
+                    corporate_tax_years.add(tax_year)
+            if isinstance(event, s.ConvertCurrencyEvent):
+                bank, wallet = item_ids.get(event.bank), item_ids.get(event.foreign_cash)
+                self.check_available_bank(
+                    bank[2] if bank is not None and bank[0] == event.person else None, f"{path}.bank"
+                )
+                if wallet is None or wallet[0] != event.person or not isinstance(wallet[2], s.ForeignCashAccount):
+                    self.error(f"{path}.foreign_cash", "must be an owned USD cash account")
+            if isinstance(event, s.ExercisePrivateOptionsEvent):
+                grant = item_ids.get(event.grant)
+                if grant is None or grant[0] != event.person or not isinstance(grant[2], s.PrivateOptionAccount):
+                    self.error(f"{path}.grant", "must be a private option grant owned by the person")
+                entry = item_ids.get(event.bank)
+                bank = entry[2] if entry is not None and entry[0] == event.person else None
+                if isinstance(bank, s.ForeignCashAccount):
+                    if (
+                        grant is not None
+                        and isinstance(grant[2], s.PrivateOptionAccount)
+                        and bank.currency != grant[2].currency
+                    ):
+                        self.error(f"{path}.bank", "the currency must match the option grant")
+                    if event.funding_fx is not None:
+                        self.error(f"{path}.funding_fx", "omit the funding exchange rate when paying in USD")
+                else:
+                    self.check_available_bank(bank, f"{path}.bank")
+                if self.spec.meta.ontario_retirement_tax is None:
+                    self.error(path, "private option exercises need the owner's Ontario return policy")
+            if isinstance(event, s.SellPrivateSharesEvent):
+                holding = item_ids.get(event.holding)
+                if holding is None or holding[0] != event.person or not isinstance(holding[2], s.PrivateShareAccount):
+                    self.error(f"{path}.holding", "must be a private share holding owned by the seller")
+                target = item_ids.get(event.bank)
+                self.check_sale_settlement(
+                    target[2] if target is not None and target[0] == event.person else None,
+                    event.currency,
+                    event.settlement_fx,
+                    path,
+                )
+                if self.spec.meta.ontario_retirement_tax is None:
+                    self.error(path, "private share sales need the owner's Ontario return policy")
+            if isinstance(event, s.OntarioTaxStatementEvent) and self.spec.meta.ontario_retirement_tax is None:
+                self.error(path, "reported Ontario tax facts need the Ontario return policy")
+            if isinstance(event, s.RRSPContributeEvent):
+                self.check_rrsp_contribution(event, path, item_ids)
             if isinstance(event, s.ContributeEvent):
                 target = item_ids.get(event.account)
                 if target is None or target[1] != "accounts":
                     self.error(f"{path}.account", f"unknown account {event.account!r}", code="unknown_reference")
-                elif target[2].kind in ("401k", "pension", "annuity", "inherited_pretax", "trust", "cash_reserve"):
+                elif target[2].kind in ("rrsp", "rrif"):
+                    self.error(f"{path}.account", "use rrsp_contribute with a deduction year for eligible RRSP cash")
+                elif target[2].kind in (
+                    "401k",
+                    "pension",
+                    "annuity",
+                    "inherited_pretax",
+                    "trust",
+                    "cash_reserve",
+                    "private_shares",
+                    "share_sale_receivable",
+                    "private_options",
+                    "private_share_issuance",
+                    "foreign_cash",
+                ):
                     self.error(
                         f"{path}.account",
                         f"one-time contributions to a {target[2].kind} account are not supported.",
@@ -1370,7 +1581,19 @@ class _SpecChecker:
                     kind = target[2].kind
                     if event.bucket is not None and kind != "401k":
                         self.error(f"{path}.bucket", "bucket is for 401k accounts.")
-                    if kind in ("pension", "annuity", "inherited_pretax", "trust", "daf", "cash_reserve"):
+                    if kind in (
+                        "pension",
+                        "annuity",
+                        "inherited_pretax",
+                        "trust",
+                        "daf",
+                        "cash_reserve",
+                        "private_shares",
+                        "share_sale_receivable",
+                        "private_options",
+                        "private_share_issuance",
+                        "foreign_cash",
+                    ):
                         self.error(f"{path}.account", f"recurring contributions to a {kind} account are not supported.")
                     if kind == "401k" and target[2].job is None and isinstance(event, s.ChangeContributionEvent):
                         self.error(f"{path}.account", "a 401k without a job takes no contributions.")
@@ -1402,6 +1625,61 @@ class _SpecChecker:
                         f"claim at {min_claim} or later.",
                         "ss_claim_too_early",
                     )
+
+    def check_available_bank(self, target, path: str) -> None:
+        if not isinstance(target, s.BankAccount) or target.reserve:
+            self.error(path, "must be the person's available CAD bank account")
+
+    def check_sale_settlement(self, target, currency: str, settlement_fx, path: str) -> None:
+        if isinstance(target, s.ForeignCashAccount):
+            if target.currency != currency:
+                self.error(f"{path}.bank", "the settlement currency must match the USD cash account")
+        else:
+            self.check_available_bank(target, f"{path}.bank")
+            if settlement_fx is None or (currency == "CAD" and settlement_fx != 1):
+                self.error(f"{path}.settlement_fx", "provide a CAD conversion rate, or 1 for CAD proceeds")
+
+    def check_registered_cash_event(self, event: s.RegisteredCashEvent, path: str, item_ids: dict) -> None:
+        if isinstance(event, s.RRSPToRRIFEvent):
+            references = (("rrsp", event.rrsp, s.RRSP), ("rrif", event.rrif, s.RRIF))
+        else:
+            references = (("account", event.account, s.RRSP | s.RRIF | s.TFSA), ("bank", event.bank, s.BankAccount))
+            if event.withholding is not None and event.withholding > event.amount:
+                self.error(f"{path}.withholding", "withholding cannot exceed the gross amount")
+            target = item_ids.get(event.account)
+            if (
+                target is not None
+                and isinstance(target[2], s.TFSA)
+                and (event.withholding or event.year_to_date_target)
+            ):
+                self.error(path, "TFSA withdrawals have no withholding or taxable annual target")
+        for field, ident, kind in references:
+            item = item_ids.get(ident)
+            if item is None or item[0] != event.person or not isinstance(item[2], kind):
+                self.error(f"{path}.{field}", "must reference an owned account of the specified type")
+            elif field == "bank" and item[2].reserve:
+                self.error(f"{path}.bank", "use the owner's available bank account")
+        if self.spec.meta.ontario_retirement_tax is None:
+            self.error(path, "Canadian registered transactions need the Ontario return policy")
+
+    def check_rrsp_contribution(self, event: s.RRSPContributeEvent, path: str, item_ids: dict) -> None:
+        for field, ident, kind in (("bank", event.bank, s.BankAccount), ("account", event.account, s.RRSP)):
+            target = item_ids.get(ident)
+            if target is None or target[0] != event.person or not isinstance(target[2], kind):
+                self.error(f"{path}.{field}", "must reference the contributor's own bank account or RRSP, respectively")
+            elif field == "bank" and target[2].reserve:
+                self.error(f"{path}.bank", "the contribution must use available bank cash")
+        person = self.people.get(event.person)
+        if person is not None and (
+            person.rrsp_room is None or event.deduction_year not in person.rrsp_room.deduction_limits
+        ):
+            self.error(
+                f"{path}.deduction_year", "supply owner-level rrsp_room and a limit for the elected deduction year"
+            )
+        if self.spec.meta.ontario_retirement_tax is None:
+            self.error(path, "a dated RRSP deduction needs the Ontario return policy")
+        if event.deduction_year < self.start:
+            self.error(f"{path}.deduction_year", "start the projection in or before the elected tax year")
 
     def _cycle(self, event, by_id: dict) -> bool:
         seen = set()

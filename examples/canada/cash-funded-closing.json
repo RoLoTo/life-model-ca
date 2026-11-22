@@ -1,0 +1,33 @@
+{
+  "spec_version": 1,
+  "meta": {
+    "name": "Synthetic cash-funded closing",
+    "start_year": 2027,
+    "end_year": 2027,
+    "default_state": "DEFAULT",
+    "accepted_warnings": ["cash_not_invested", "no_health_coverage", "zero_growth", "fixed_growth"]
+  },
+  "people": [{
+    "id": "owner", "name": "Owner", "age": 56, "birth": "1971-01", "retirement_age": 66,
+    "spending": {"amount_annual": 0, "growth_pct": 0},
+    "accounts": [
+      {"kind": "bank", "id": "cash", "balance": 120000, "interest_pct": 0},
+      {"kind": "brokerage", "id": "investment", "growth_pct": 0, "dividend_yield_pct": 0}
+    ],
+    "housing": [{"kind": "home", "id": "old-home", "purchase_price": 60000,
+                  "expenses": {}, "value_growth_pct": 0, "pmi": false}]
+  }],
+  "events": [
+    {"action": "sell_home", "id": "sale", "person": "owner", "at": {"year": 2027, "month": 1, "day": 27},
+     "home": "old-home", "selling_cost_pct": 0},
+    {"action": "buy_home", "id": "closing", "person": "owner", "at": {"year": 2027, "month": 1, "day": 28},
+     "home": {"kind": "home", "id": "new-home", "purchase_price": 500000, "expenses": {},
+              "value_growth_pct": 0, "pmi": false},
+     "cash_funding": {"closing_costs": 20000, "cash_to_keep": 30000, "minimum_down_payment": 100000,
+                      "mortgage_limit": 400000, "rate_pct": 0, "term_years": 25}},
+    {"action": "reserve_cash", "id": "earmark", "person": "owner", "at": {"year": 2027, "month": 1, "day": 29},
+     "bank": "cash", "amount": 25000, "name": "February transfer reserve", "release_on": "2027-02-15"},
+    {"action": "contribute", "id": "invest-payment", "person": "owner", "at": {"year": 2027, "month": 2, "day": 15},
+     "account": "investment", "amount": 25000}
+  ]
+}

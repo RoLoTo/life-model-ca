@@ -4,18 +4,66 @@
 # https://github.com/sw23/life-model/blob/main/LICENSE
 
 import html
+from datetime import date
+from decimal import ROUND_DOWN, Decimal
 from typing import ClassVar
 
 from ..base_classes import FinancialAccount
 from ..deprecated_names import deprecated_arguments
 from ..economy import annual_to_monthly
 from ..ledger import FlowKind
-from ..model import compound_interest
+from ..model import compound_interest, snap_money
 from ..people.person import Person
 from ..tax.income import IncomeType
 
 #: ``compounding`` choices and the number of compounding periods per year each means.
 COMPOUNDING_PERIODS = {"monthly": 12, "annual": 1}
+
+
+class BankFundingShortfall(ValueError):
+    """An exact dated payment needs more of the owner's settled CAD."""
+
+    def __init__(self, bank, on, amount):
+        self.on = on
+        self.amount = amount
+        self.currency = "CAD"
+        self.person_id = getattr(bank.owner, "spec_id", None)
+        super().__init__(f"{on.isoformat()}: CAD {amount:,.2f} in additional settled bank cash is required")
+
+
+def fund_from_owned_banks(bank, amount: Decimal, *, on: date):
+    """Consolidate whole cents from one owner's settled non-reserve bank accounts."""
+
+    def available(account):
+        return max(Decimal(0), Decimal(str(snap_money(account.balance))).quantize(Decimal(".01"), rounding=ROUND_DOWN))
+
+    gap = amount - available(bank)
+    if gap <= 0:
+        return
+    others = [
+        (candidate, available(candidate))
+        for candidate in bank.owner.usable_bank_accounts
+        if candidate is not bank and candidate.owner is bank.owner and not candidate.reserve
+    ]
+    total = sum((cash for _, cash in others), Decimal(0))
+    if total < gap:
+        raise BankFundingShortfall(bank, on, gap - total)
+    for candidate, cash in others:
+        moved = min(gap, cash)
+        if moved:
+            amount_moved = float(moved)
+            candidate.withdraw(amount_moved)
+            bank.deposit(amount_moved)
+            bank.model.ledger.post(
+                amount_moved,
+                FlowKind.TRANSFER,
+                from_account=candidate,
+                to_account=bank,
+                cause="Fund dated payment from owner's bank balances",
+            )
+            gap -= moved
+        if not gap:
+            break
 
 
 class BankAccount(FinancialAccount):

@@ -105,6 +105,7 @@ NonNegativePercent = Annotated[float, Field(ge=0, le=1000)]
 GrowthPct = Percent | Literal["economy"]
 #: Dollars; never negative (debts are entered as positive balances).
 NonNegativeMoney = Annotated[float, Field(ge=0)]
+CashAmount = Annotated[Decimal, Field(ge=0, decimal_places=2)]
 #: An age in whole years.
 Age = Annotated[int, Field(ge=0, le=119)]
 #: A (possibly fractional) age such as a retirement age of 59.5.
@@ -129,6 +130,72 @@ def _id_field(what: str) -> Any:
 # --- Meta and economy ---------------------------------------------------------------------------
 
 
+class OpeningOntarioTaxBalance(SpecModel):
+    """A prior year's remaining tax balance as of the opening date."""
+
+    balance: Decimal = spec_field(
+        description="CAD payable (positive) or refund receivable (negative).", decimal_places=2, unit="CAD"
+    )
+    settles_on: date = spec_field(description="Scheduled date for the cash payment or refund.")
+
+
+class OntarioTaxIndexation(SpecModel):
+    """A pinned published rate vintage and an assumed annual tax indexation rate."""
+
+    base_year: Year = spec_field(description="Published Ontario rate vintage for projections after this year.")
+    annual_pct: Decimal = spec_field(
+        description="Annual percentage adjustment of indexed personal amounts.", ge=0, le=100, unit="percent"
+    )
+
+
+class OntarioRetirementTax(SpecModel):
+    province: Literal["ON"]
+    settlement_dates: dict[Year, date] = spec_field(
+        description="Projected payment or refund date for each following-year settlement."
+    )
+    freeze_2026: bool = spec_field(False, description="Explicitly carry the 2026 parameters forward in projections.")
+    freeze_after: Year | None = spec_field(
+        None, description="Use published parameters through this year and carry its rates forward in later years."
+    )
+
+    indexation: OntarioTaxIndexation | None = spec_field(
+        None,
+        description="Project indexed personal-tax amounts after a published vintage. Payroll rates and limits "
+        "stay at the base vintage in future years.",
+    )
+    track_foreign_cash_gains: bool = spec_field(
+        False, description="Pool this taxpayer's USD capital-account cash and calculate the annual net FX result."
+    )
+    estimate_registered_withholding: bool = spec_field(
+        False,
+        description="Estimate non-Quebec lump-sum withholding on automatic withdrawals and scheduled payments "
+        "without an explicit withholding amount. Each payment is treated as a separate request.",
+    )
+
+    oas_recovery_thresholds: dict[Year, CashAmount] = spec_field(
+        default_factory=dict,
+        description="Scenario OAS recovery thresholds by actual tax year, overriding the selected rate table.",
+    )
+
+    opening_balances: dict[Year, OpeningOntarioTaxBalance] = spec_field(
+        default_factory=dict, description="Outstanding prior-year personal tax balances keyed by tax year."
+    )
+
+    @model_validator(mode="after")
+    def check_rate_freeze(self) -> "OntarioRetirementTax":
+        if self.freeze_2026 and self.freeze_after is not None:
+            raise ValueError("Use either freeze_2026 or freeze_after")
+        if self.indexation is not None and (self.freeze_2026 or self.freeze_after is not None):
+            raise ValueError("Use either indexation or a rate freeze")
+        if self.indexation is not None:
+            from ..canada.rates import ontario_rates
+
+            ontario_rates(self.indexation.base_year)
+        if any(value <= 0 for value in self.oas_recovery_thresholds.values()):
+            raise ValueError("OAS recovery thresholds must be positive")
+        return self
+
+
 class Meta(SpecModel):
     """Run metadata: the simulated period, seed, named scenario and state defaults."""
 
@@ -147,6 +214,9 @@ class Meta(SpecModel):
         description="Last simulated year (inclusive). Defaults to start_year + 50.",
         unit="year",
         core="LifeModel.end_year",
+    )
+    ontario_retirement_tax: OntarioRetirementTax | None = spec_field(
+        None, description="Ontario resident retirement-income policy and dated tax cash assumptions."
     )
     start: YearMonth | None = spec_field(
         None,
@@ -175,6 +245,16 @@ class Meta(SpecModel):
         "cash_not_invested]): the validator drops them, so they do not fail --checks strict. Record why with "
         "the assumptions you report. Errors cannot be accepted.",
     )
+
+    @model_validator(mode="after")
+    def check_opening_tax(self):
+        if self.ontario_retirement_tax is not None:
+            month = int(self.start[-2:]) if self.start is not None else 1
+            opening = date(self.start_year, month, 1)
+            for year, item in self.ontario_retirement_tax.opening_balances.items():
+                if year >= self.start_year or item.settles_on < opening:
+                    raise ValueError("Opening tax must be for a prior year and settle from the opening month")
+        return self
 
     @field_validator("accepted_warnings")
     @classmethod
@@ -327,12 +407,12 @@ class At(SpecModel):
         chosen = [name for name in ("year", "age", "relative") if getattr(self, name) is not None]
         if len(chosen) != 1:
             raise ValueError(f"'at' needs exactly one of year, age or relative (got {chosen or 'none'})")
-        if self.person is not None and self.age is None:
-            raise ValueError("'at.person' is only meaningful with 'at.age'")
         if self.day is not None:
             if self.year is None or self.month is None:
-                raise ValueError("'at.day' requires an explicit calendar year and month")
+                raise ValueError("A day requires an explicit calendar year and month")
             date(self.year, self.month, self.day)
+        if self.person is not None and self.age is None:
+            raise ValueError("'at.person' is only meaningful with 'at.age'")
         return self
 
 
@@ -812,6 +892,22 @@ class BankAccount(SpecModel):
     )
 
 
+class ForeignCashAccount(SpecModel):
+    """Settled USD cash carried at a stated CAD reporting rate."""
+
+    CORE_CLASS = "ForeignCash"
+
+    kind: Literal["foreign_cash"]
+    id: Identifier | None = _id_field("foreign cash account")
+    name: str = spec_field(description="Name of the foreign cash account.", min_length=1)
+    currency: Literal["USD"] = spec_field(description="Currency of the settled cash.")
+    units: CashAmount = spec_field(description="Opening settled cash in the stated currency.", unit="USD")
+    cad_mark: Decimal = spec_field(description="CAD reporting value per USD. It does not set the trade rate.", gt=0)
+    opening_cad_basis: CashAmount | None = spec_field(
+        None, description="Actual CAD basis of opening USD units, required for positive balances with FX tax enabled."
+    )
+
+
 class CashReserveAccount(SpecModel):
     """Cash already earmarked at the start, held outside the payment waterfall until release."""
 
@@ -822,6 +918,98 @@ class CashReserveAccount(SpecModel):
     name: str = spec_field("Earmarked cash", description="Label used on the ledger.")
     balance: float = spec_field(description="Starting earmarked balance.", unit="USD", gt=0, allow_inf_nan=False)
     release_on: date = spec_field(description="Calendar date when the balance becomes available.")
+
+
+class PrivateShareAccount(SpecModel):
+    """One owner's pooled holding of identical private shares."""
+
+    CORE_CLASS = "PrivateShareHolding"
+
+    kind: Literal["private_shares"]
+    id: Identifier | None = _id_field("private share holding")
+    name: str = spec_field(description="Name of the security or share class.", min_length=1)
+    quantity: int = spec_field(description="Opening share count.", ge=0)
+    cad_basis: CashAmount = spec_field(description="Pooled Canadian adjusted cost base.", unit="CAD")
+    cad_price: Decimal = spec_field(description="Valuation per share for the balance sheet.", unit="CAD", ge=0)
+
+    @model_validator(mode="after")
+    def check_basis(self) -> "PrivateShareAccount":
+        if not self.quantity and self.cad_basis:
+            raise ValueError("Zero shares must have zero pooled basis")
+        return self
+
+
+class OptionBlackout(SpecModel):
+    start: date = spec_field(description="First day exercise is blocked.")
+    end: date = spec_field(description="Last day exercise is blocked, inclusive.")
+
+    @model_validator(mode="after")
+    def check_dates(self) -> "OptionBlackout":
+        if self.end < self.start:
+            raise ValueError("The end of a blackout cannot precede its start")
+        return self
+
+
+class PrivateOptionAccount(SpecModel):
+    """Opening non-CCPC employee option grant for one issued share class."""
+
+    CORE_CLASS = "PrivateOptionGrant"
+
+    kind: Literal["private_options"]
+    id: Identifier | None = _id_field("private option grant")
+    name: str = spec_field(description="Name of the employee option grant.", min_length=1)
+    holding: Identifier = spec_field(description="The owner's private share holding for this grant.")
+    quantity: int = spec_field(description="Number of options in the grant, including previously used options.", gt=0)
+    strike_price: Decimal = spec_field(description="Strike per option in the grant currency.", unit="currency", ge=0)
+    currency: Literal["CAD", "USD"] = spec_field(description="Currency of the strike and exercise value.")
+    expires_on: date = spec_field(description="Last day of exercise. Remaining options expire at the end of that day.")
+    blackouts: list[OptionBlackout] = spec_field(default_factory=list, description="Exercise blackout intervals.")
+    exercised: int = spec_field(0, description="Options already exercised at opening.", ge=0)
+    expired: int = spec_field(0, description="Options already expired at opening.", ge=0)
+
+    @model_validator(mode="after")
+    def check_counts(self) -> "PrivateOptionAccount":
+        if self.exercised + self.expired > self.quantity:
+            raise ValueError("Opening exercised and expired counts exceed the option grant")
+        return self
+
+
+class PrivateShareIssuanceAccount(SpecModel):
+    """Paid-for shares from an earlier exercise that are awaiting release for sale."""
+
+    CORE_CLASS = "PendingPrivateShares"
+
+    kind: Literal["private_share_issuance"]
+    id: Identifier | None = _id_field("pending private share issuance")
+    name: str = spec_field(description="Name or reference of the executed option acquisition.", min_length=1)
+    holding: Identifier = spec_field(description="The owner's private share holding that receives the shares.")
+    quantity: int = spec_field(description="Number of paid-for shares awaiting release.", gt=0)
+    cad_basis: CashAmount = spec_field(
+        description="Share of the CAD pooled cost base assigned to this opening position.", unit="CAD"
+    )
+    available_on: date = spec_field(description="Date those shares become available for sale.")
+
+
+class ShareSaleReceivableAccount(SpecModel):
+    """An opening claim from a disposition accounted for before the run."""
+
+    CORE_CLASS = "ShareSaleReceivable"
+
+    kind: Literal["share_sale_receivable"]
+    id: Identifier | None = _id_field("share sale receivable")
+    name: str = spec_field(description="Name or reference for the sale.", min_length=1)
+    bank: Identifier = spec_field(
+        description="The owner's CAD bank or matching foreign cash account that receives the proceeds."
+    )
+    balance: CashAmount = spec_field(description="The unsettled amount's opening book value.", unit="CAD")
+    currency: Literal["CAD", "USD"] = spec_field(description="Currency in which sale proceeds are owed.")
+    foreign_net: CashAmount = spec_field(description="Net sale proceeds in the stated currency.", unit="currency", gt=0)
+    settlement_fx: Decimal | None = spec_field(
+        None,
+        description="CAD conversion rate or CAD tax value per unit on USD settlement. If omitted on a USD receipt, carry its disposition value.",
+        gt=0,
+    )
+    settles_on: date = spec_field(description="Date the destination account receives settled cash.")
 
 
 class FixedIncomeAccount(SpecModel):
@@ -1553,14 +1741,69 @@ class Trust(SpecModel):
     )
 
 
+class CanadianRegisteredBalance(SpecModel):
+    id: Identifier | None = _id_field("account")
+    balance: NonNegativeMoney = spec_field(0.0, description="Opening balance.", unit="CAD")
+    growth_pct: GrowthPct = spec_field("economy", description="Annual return.", unit="percent")
+
+
+class RRSP(CanadianRegisteredBalance):
+    kind: Literal["rrsp"]
+    owner_birth: date = spec_field(description="Full birth date for Canadian maturity rules.")
+    convert_at_maturity: bool = spec_field(description="Elect direct RRSP-to-RRIF transfer at maturity.")
+
+
+class RRIF(CanadianRegisteredBalance):
+    kind: Literal["rrif"]
+    owner_birth: date = spec_field(description="Full birth date of the annuitant.")
+    established_year: Year = spec_field(description="Calendar year the RRIF was established.", unit="year")
+    minimum_age_birth: date | None = spec_field(None, description="Birth date elected for minimum withdrawals.")
+
+
+class TFSA(CanadianRegisteredBalance):
+    kind: Literal["tfsa"]
+
+
+class CanadianRRSPRoom(SpecModel):
+    """One person's assessed/planned room and deduction limits for all their RRSPs."""
+
+    available: CashAmount = spec_field(description="Available contribution room at the opening date.", unit="CAD")
+    annual_additions: dict[Year, CashAmount] = spec_field(
+        default_factory=dict, description="New room to add at the start of each future calendar year.", unit="CAD"
+    )
+    deduction_limits: dict[Year, CashAmount] = spec_field(
+        description="Deduction limit available for the new claims modeled for each tax year.", unit="CAD"
+    )
+
+
+class CanadianTFSARoom(SpecModel):
+    available: NonNegativeMoney = spec_field(
+        description="Total owner's available room at projection start.", unit="CAD"
+    )
+    annual_limits: dict[Year, NonNegativeMoney] = spec_field(
+        description="Published or assumed CAD TFSA dollar limits by calendar year after the opening year."
+    )
+    withdrawals_to_restore: NonNegativeMoney = spec_field(
+        0.0, description="Withdrawals already made in the opening year to restore next January.", unit="CAD"
+    )
+
+
 Account = Annotated[
     BankAccount
     | CashReserveAccount
+    | ForeignCashAccount
+    | PrivateShareAccount
+    | PrivateOptionAccount
+    | PrivateShareIssuanceAccount
+    | ShareSaleReceivableAccount
     | FixedIncomeAccount
     | BrokerageAccount
     | Job401k
     | TraditionalIRA
     | RothIRA
+    | RRSP
+    | RRIF
+    | TFSA
     | HealthSavingsAccount
     | Plan529
     | InheritedPretaxAccount
@@ -1906,6 +2149,12 @@ class Mortgage(_LoanTerms):
         description="Escrow included in payment_monthly (subtracted: the home's expenses pay tax and insurance).",
         unit="USD/month",
         core="Mortgage.escrow_monthly",
+    )
+    rate_pct: NonNegativePercent = spec_field(
+        description="Quoted annual interest rate used to calculate payments.",
+        unit="percent",
+        core="Mortgage.yearly_interest_rate",
+        typical_above_one=True,
     )
 
     @model_validator(mode="after")
@@ -2639,6 +2888,10 @@ class SavingsPolicy(SpecModel):
         None, description="Last transfer year, inclusive.", unit="year", core="SavingsPolicy.end_year"
     )
 
+    reserve_ontario_tax: bool = spec_field(
+        False, description="Protect unpaid and estimated Ontario income tax in addition to the cash floor."
+    )
+
     @model_validator(mode="after")
     def _source_and_window(self) -> "SavingsPolicy":
         if self.source_bank == self.sweep_to:
@@ -2744,6 +2997,37 @@ class SelfEmployment(SpecModel):
 # --- People --------------------------------------------------------------------------------------
 
 
+class CanadianPensionSpec(SpecModel):
+    """A monthly Canada Pension Plan retirement or Old Age Security benefit."""
+
+    CORE_CLASS = "CanadianPension"
+
+    kind: Literal["cpp", "oas"] = spec_field(description="CPP retirement pension or OAS.")
+    starts: YearMonth = spec_field(description="First benefit month, YYYY-MM.")
+    monthly_amount: CashAmount = spec_field(
+        description="Gross monthly benefit at commencement. For OAS use the amount before its age-75 increase.",
+        gt=0,
+        unit="CAD",
+    )
+    pay_day: int = spec_field(
+        31, description="Modeled day of receipt. Clipped to the calendar month's last day.", ge=1, le=31
+    )
+    annual_index_pct: Decimal = spec_field(
+        Decimal(0), description="Scenario annual January indexation after commencement.", ge=0, unit="percent"
+    )
+    monthly_withholding: CashAmount = spec_field(
+        Decimal(0),
+        description="Assumed total cash withheld each payment, including any OAS recovery withheld at source.",
+        unit="CAD",
+    )
+
+    @model_validator(mode="after")
+    def check_pension_withholding(self):
+        if self.monthly_withholding > self.monthly_amount:
+            raise ValueError("Pension withholding cannot exceed its starting benefit")
+        return self
+
+
 class Person(SpecModel):
     """A person and everything they own."""
 
@@ -2811,11 +3095,16 @@ class Person(SpecModel):
     )
     jobs: list[Job] = spec_field(default_factory=list, description="Jobs (W-2).")
     accounts: list[Account] = spec_field(default_factory=list, description="Accounts, discriminated by 'kind'.")
+    rrsp_room: CanadianRRSPRoom | None = spec_field(None, description="Shared room for dated RRSP contributions.")
+    tfsa_room: CanadianTFSARoom | None = spec_field(None, description="One shared contribution room for this owner.")
     debts: list[Debt] = spec_field(
         default_factory=list, description="Debts (car, student, credit_card, heloc, bridge_line)."
     )
     housing: list[Housing] = spec_field(default_factory=list, description="Homes and rentals.")
     insurance: list[Insurance] = spec_field(default_factory=list, description="Insurance policies.")
+    canadian_pensions: list[CanadianPensionSpec] = spec_field(
+        default_factory=list, description="Dated Canadian public pensions. Requires the Ontario income tax policy."
+    )
     social_security: SocialSecurity | None = spec_field(None, description="Social Security benefits.")
     healthcare: Healthcare | None = spec_field(None, description="Opt-in healthcare cost agents.")
     giving: list[Giving] = spec_field(default_factory=list, description="Charitable giving.")
@@ -2873,6 +3162,97 @@ class Relationships(SpecModel):
     marriages: list[Marriage] = spec_field(default_factory=list, description="Marriages.")
 
 
+class CorporatePayableSpec(SpecModel):
+    """An outstanding corporate obligation from before the simulation start."""
+
+    amount: CashAmount = spec_field(description="Amount still payable.", unit="CAD")
+    due: date = spec_field(description="Date to pay the obligation.")
+    redeem_investments: bool = spec_field(False, description="Allow redemption of corporate deposits for this payable.")
+
+
+class CorporateDividendRefundSpec(SpecModel):
+    """An accrued corporate dividend refund awaiting assessment."""
+
+    amount: CashAmount = spec_field(description="Amount still expected.", gt=0, unit="CAD")
+    due: date = spec_field(description="Forecast date of CRA assessment or refund payment.")
+
+
+class CorporateOperatingBalance(SpecModel):
+    """An operating amount already recognized before the run but still unsettled."""
+
+    amount: Decimal = spec_field(
+        description="CAD receivable (positive) or payable (negative).", decimal_places=2, unit="CAD"
+    )
+    due: date = spec_field(description="Date of the cash receipt or payment.")
+
+
+class CorporatePayrollYTD(SpecModel):
+    """Employer-specific year-to-date figures for the opening calendar year."""
+
+    pensionable: CashAmount = spec_field(Decimal(0), description="Pensionable earnings.", unit="CAD")
+    cpp: CashAmount = spec_field(Decimal(0), description="Employee CPP before CPP2.", unit="CAD")
+    cpp2: CashAmount = spec_field(Decimal(0), description="Employee CPP2.", unit="CAD")
+    ei: CashAmount = spec_field(Decimal(0), description="Employee EI premiums.", unit="CAD")
+
+
+class CorporateInterestAccountSpec(SpecModel):
+    """An interest-bearing CAD balance held separately from corporate cash."""
+
+    CORE_CLASS = "CorporateInterestAccount"
+
+    balance: CashAmount = spec_field(description="Opening invested balance.", unit="CAD")
+    annual_yield_pct: Decimal = spec_field(
+        description="Nominal annual interest rate. Interest credits monthly.", ge=0, unit="percent"
+    )
+
+
+class CorporationSpec(SpecModel):
+    """A wholly owned Canadian corporation with separate operating cash and liabilities."""
+
+    CORE_CLASS = "Corporation"
+
+    id: Identifier = spec_field(description="Unique corporation id.")
+    name: str = spec_field(description="Name of the corporation.", min_length=1)
+    shareholder: Identifier = spec_field(description="Person who wholly owns the corporation.")
+    cash: CashAmount = spec_field(description="Opening corporate CAD cash.", unit="CAD")
+    fiscal_year_end_month: int = spec_field(
+        12,
+        description="Last month of the fiscal year, closing on its last day.",
+        ge=1,
+        le=12,
+    )
+    investments: CorporateInterestAccountSpec | None = spec_field(
+        None, description="Corporate interest-bearing balance and its scenario yield."
+    )
+    investment_interest_ytd: CashAmount = spec_field(
+        Decimal(0), description="Domestic interest already earned in the opening fiscal year.", unit="CAD"
+    )
+    nerdtoh: CashAmount = spec_field(
+        Decimal(0), description="Opening non-eligible refundable dividend tax on hand.", unit="CAD"
+    )
+    dividends_paid_ytd: CashAmount = spec_field(
+        Decimal(0), description="Qualifying non-eligible dividends already paid in the opening fiscal year.", unit="CAD"
+    )
+    dividend_refunds: dict[Year, CorporateDividendRefundSpec] = spec_field(
+        default_factory=dict, description="Outstanding corporate dividend refunds keyed by fiscal closing year."
+    )
+    operating_balances: dict[str, CorporateOperatingBalance] = spec_field(
+        default_factory=dict, description="Unsettled operating receivables and payables keyed by reference."
+    )
+    payables: dict[str, CorporatePayableSpec] = spec_field(
+        default_factory=dict, description="Opening unpaid obligations keyed by reference."
+    )
+    payroll_ytd: CorporatePayrollYTD | None = spec_field(
+        None, description="This corporation's payroll totals before the opening month, if any."
+    )
+    operating_profit_ytd: Decimal = spec_field(
+        Decimal(0),
+        description="Opening fiscal-year taxable operating profit to date, after eligible payroll.",
+        decimal_places=2,
+        unit="CAD",
+    )
+
+
 # --- Events --------------------------------------------------------------------------------------
 
 
@@ -2883,6 +3263,11 @@ class EventBase(SpecModel):
     at: At = spec_field(description="When the event happens: {year}, {age} or {relative: {after, years}}.")
     person: Identifier = spec_field(description="Person the event applies to.")
     name: str | None = spec_field(None, description="Description shown in the event list.")
+    same_day_order: int = spec_field(
+        0,
+        description="For events on the same date with equal engine priority and dependency depth, lower values run first. "
+        "Automatic settlement and account-opening priorities still apply.",
+    )
 
 
 class MarryEvent(EventBase):
@@ -2938,7 +3323,16 @@ ClosingMoney = Annotated[Decimal, Field(ge=0, decimal_places=2, allow_inf_nan=Fa
 class HomeCashFunding(SpecModel):
     """Size a purchase from available bank cash after protecting cash and paying costs."""
 
-    closing_costs: ClosingMoney = spec_field(description="Total cash cost of closing.", unit="USD")
+    closing_costs: ClosingMoney = spec_field(description="Cash closing costs before any configured transfer tax.")
+    land_transfer_tax: Literal["ontario", "toronto"] | None = spec_field(
+        None, description="Add residential land transfer tax to closing costs. Toronto includes both taxes."
+    )
+    rate_compounding: MortgageRateCompounding = spec_field(
+        "monthly", description="Compounding of the quoted mortgage interest rate."
+    )
+    prepayment_privilege: MortgagePrepaymentPrivilege | None = spec_field(
+        None, description="Optional lump-sum terms for the new mortgage, with zero opening usage."
+    )
     cash_to_keep: ClosingMoney = spec_field(description="Bank cash to retain at closing.", unit="USD")
     minimum_down_payment: ClosingMoney = spec_field(description="Minimum cash down payment.", unit="USD")
     mortgage_limit: ClosingMoney = spec_field(description="Maximum financing available at closing.", unit="USD")
@@ -2966,6 +3360,10 @@ class BuyHomeEvent(EventBase):
         funding = self.cash_funding
         if funding is None:
             return self
+        if funding.land_transfer_tax is not None and self.at.day is None:
+            raise ValueError("Land transfer tax requires an explicit closing day")
+        if funding.prepayment_privilege is not None and funding.prepayment_privilege.used:
+            raise ValueError("A new mortgage cannot have previously used lump-sum privilege")
         if self.home.down_payment or self.home.mortgage is not None or self.home.closing_cost_pct is not None:
             raise ValueError("cash_funding supplies home.down_payment, home.mortgage and home.closing_cost_pct")
         price = Decimal(str(self.home.purchase_price))
@@ -2978,13 +3376,64 @@ class BuyHomeEvent(EventBase):
         return self
 
 
+class HomeValuationEvent(EventBase):
+    """Record an observed market value on its date without changing cash or cost basis."""
+
+    action: Literal["record_home_valuation"]
+    home: Identifier = spec_field(description="Id of the owned home.")
+    market_value: CashAmount = spec_field(description="Observed market value.", gt=0, unit="CAD")
+
+    @model_validator(mode="after")
+    def check_observation_date(self) -> "HomeValuationEvent":
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("A home valuation requires a full observation date")
+        return self
+
+
+class ConvertHomeToOntarioRentalEvent(EventBase):
+    """Convert an existing, wholly owner-occupied home using an exempt pre-conversion gain."""
+
+    action: Literal["convert_home_to_ontario_rental"]
+    home: Identifier = spec_field(description="Id of the owner's home being converted.")
+    market_value: CashAmount = spec_field(description="Fair market value on conversion.", gt=0, unit="CAD")
+    monthly_rent: CashAmount = spec_field(description="Monthly gross rent received.", gt=0, unit="CAD/month")
+    monthly_operating_cost: CashAmount = spec_field(description="Monthly current rental expenses.", unit="CAD/month")
+    eligible_interest_fraction: Annotated[Decimal, Field(ge=0, le=1)] = spec_field(
+        description="Share of mortgage interest attributable to eligible rental use of borrowed funds."
+    )
+    annual_index_pct: Decimal = spec_field(
+        Decimal(0), ge=0, description="Index rent and operating costs each January.", unit="percent"
+    )
+    annual_value_growth_pct: Percent | None = spec_field(
+        None, description="Annual appreciation assumption for the converted rental.", unit="percent"
+    )
+    full_preconversion_designation: Literal[True] = spec_field(
+        description="Explicit assumption that the entire pre-conversion gain is exempt."
+    )
+
+    @model_validator(mode="after")
+    def check_conversion_date(self) -> "ConvertHomeToOntarioRentalEvent":
+        if self.at.year is None or self.at.month is None or self.at.day != 1:
+            raise ValueError("A rental conversion needs a first-of-month calendar date")
+        return self
+
+
 class SellHomeEvent(EventBase):
-    """Sell a home: pay off the mortgage, realize the equity, tax the gain above the exclusion."""
+    """Sell a home: pay off secured debt, realize equity and apply the residence tax policy."""
 
     action: Literal["sell_home"]
     home: Identifier = spec_field(description="Id of the home.")
     selling_cost_pct: NonNegativePercent | None = spec_field(
         None, description="Selling costs (configured default when unset).", unit="percent"
+    )
+    selling_cost_fixed: CashAmount = spec_field(
+        Decimal(0), description="Fixed selling expenses in addition to the percentage commission.", unit="currency"
+    )
+    canadian_rental_sale: bool = spec_field(False, description="Dispose of a converted Ontario rental at market value.")
+    canadian_principal_residence: bool = spec_field(
+        False,
+        description="Under the Ontario return policy, specify that the entire gain qualifies for the "
+        "Canadian principal residence exemption and the designation will be reported.",
     )
 
 
@@ -3035,6 +3484,7 @@ class ReserveCashEvent(EventBase):
     """Move cash from an owned bank into an earmark until its scheduled release."""
 
     action: Literal["reserve_cash"]
+    pool_cash: bool = spec_field(False, description="Top up from the same owner's other available CAD banks.")
     bank: Identifier = spec_field(description="Id of the owner's funding bank.")
     amount: float = spec_field(description="Cash to earmark.", unit="USD", gt=0, allow_inf_nan=False)
     release_on: date = spec_field(description="Release date in a later month, before ordinary events that day.")
@@ -3059,6 +3509,383 @@ class ContributeEvent(EventBase):
     action: Literal["contribute"]
     account: Identifier = spec_field(description="Target account id.")
     amount: NonNegativeMoney = spec_field(description="Amount (one time).", unit="USD")
+
+
+class CorporateEvent(EventBase):
+    id: Identifier = spec_field(description="Unique corporate event reference.")
+    corporation: Identifier = spec_field(description="Corporation id. Set person to its shareholder.")
+
+    @model_validator(mode="after")
+    def check_corporate_date(self):
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("Corporate events need a full calendar date")
+        return self
+
+    def effective_date(self) -> date:
+        return date(self.at.year, self.at.month, self.at.day)
+
+
+class CorporateOperatingCashEvent(CorporateEvent):
+    """Recognize business revenue or a deductible operating expense and date its cash movement."""
+
+    action: Literal["corporate_operating_cash"]
+    amount: Decimal = spec_field(
+        description="Recognized CAD revenue (positive) or deductible expense (negative).", decimal_places=2, unit="CAD"
+    )
+
+    settles_on: date | None = spec_field(None, description="Cash date. Defaults to the recognition date in at.")
+
+    @model_validator(mode="after")
+    def check_operating_dates(self):
+        if self.settles_on is not None and self.settles_on < self.effective_date():
+            raise ValueError("Operating cash cannot settle before it is recognized")
+        return self
+
+
+class CorporateInvestmentTransferEvent(CorporateEvent):
+    """Move money between the corporation's operating cash and interest-bearing account."""
+
+    action: Literal["corporate_investment_transfer"]
+    amount: Decimal | None = spec_field(
+        None, description="CAD invested (positive) or withdrawn (negative).", decimal_places=2, unit="CAD"
+    )
+    cash_to_keep: CashAmount | None = spec_field(
+        None, description="Invest settled cash above this reserve and existing unpaid obligations.", unit="CAD"
+    )
+
+    @model_validator(mode="after")
+    def choose_amount_or_surplus(self) -> "CorporateInvestmentTransferEvent":
+        if (self.amount is None) == (self.cash_to_keep is None):
+            raise ValueError("Specify an exact amount or a cash reserve for a surplus investment")
+        return self
+
+
+class CorporatePayrollEvent(CorporateEvent):
+    """Pay regular monthly salary from the corporation to its shareholder."""
+
+    action: Literal["corporate_payroll"]
+    gross: CashAmount = spec_field(description="Gross salary for this monthly pay.", unit="CAD", gt=0)
+    withholding: CashAmount = spec_field(description="Income tax withheld for this pay.", unit="CAD")
+    ei_insurable: bool = spec_field(description="Whether this employment is insurable for EI.")
+    remits_on: date = spec_field(description="Date the corporation pays withholding, CPP and EI to the CRA.")
+
+    @model_validator(mode="after")
+    def check_remittance_date(self):
+        if self.remits_on < self.effective_date():
+            raise ValueError("Payroll remittance cannot precede payday")
+        return self
+
+
+class CorporatePayDividendEvent(CorporateEvent):
+    """Pay a non-eligible Canadian dividend to the corporation's resident shareholder."""
+
+    action: Literal["corporate_pay_dividend"]
+    amount: CashAmount = spec_field(description="Cash dividend paid to the shareholder, or target.", gt=0, unit="CAD")
+    up_to_available: bool = spec_field(
+        False, description="Cap the target at liquid corporate assets after known payables and tax on interest to date."
+    )
+    redeem_investments: bool = spec_field(False, description="Allow redemption of corporate interest-bearing deposits.")
+
+
+class CorporateIncomeTaxEvent(CorporateEvent):
+    """Accrue a fiscal-year corporate return from operating profit and payroll."""
+
+    action: Literal["corporate_income_tax"]
+    redeem_investments: bool = spec_field(False, description="Allow redemption of corporate deposits when tax is due.")
+    settles_on: date = spec_field(description="Date the corporation pays its income-tax balance.")
+    refund_on: date | None = spec_field(
+        None, description="Forecast assessment or refund date when a dividend refund is expected."
+    )
+    rate_pct: Decimal | None = spec_field(
+        None,
+        description="Assumed combined corporate rate on eligible profit. Omit for the published Ontario small-business rates supported through 2027.",
+        ge=0,
+        le=100,
+        unit="percent",
+    )
+
+    @model_validator(mode="after")
+    def check_tax_dates(self):
+        on = self.effective_date()
+        if self.settles_on <= on:
+            raise ValueError("Corporate income tax settles after the fiscal year-end")
+        if self.refund_on is not None and self.refund_on <= on:
+            raise ValueError("The dividend refund assessment date must follow fiscal year-end")
+        if not 2026 <= on.year <= 2027 and self.rate_pct is None:
+            raise ValueError("An explicit corporate tax rate assumption is required outside supported fiscal years")
+        return self
+
+
+class ConvertCurrencyEvent(EventBase):
+    """Exchange settled cash between an owned USD account and a CAD bank account."""
+
+    action: Literal["convert_currency"]
+    pool_cash: bool = spec_field(False, description="Top up from the same owner's other available CAD banks.")
+    bank: Identifier = spec_field(description="The owner's available CAD bank account.")
+    foreign_cash: Identifier = spec_field(description="The owner's USD cash account.")
+    direction: Literal["buy_foreign", "sell_foreign"] = spec_field(description="Which currency to buy.")
+    units: CashAmount | None = spec_field(
+        None, description="USD to exchange. Omit only to sell the USD account's entire balance.", unit="USD", gt=0
+    )
+    cad_rate: Decimal = spec_field(description="Actual CAD paid or received for each USD, after fees.", gt=0)
+
+    @model_validator(mode="after")
+    def check_conversion(self) -> "ConvertCurrencyEvent":
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("Currency conversion needs a full calendar date")
+        if self.direction == "buy_foreign" and self.units is None:
+            raise ValueError("Supply a USD amount for the purchase")
+        return self
+
+
+class MoveForeignCashEvent(EventBase):
+    """Post an owned USD transfer or an external payment in USD."""
+
+    action: Literal["move_foreign_cash"]
+    source: Identifier = spec_field(description="Owner's settled USD source account.")
+    target: Identifier | None = spec_field(None, description="Owner's USD account receiving an internal transfer.")
+    units: CashAmount = spec_field(description="USD paid or transferred.", gt=0, unit="USD")
+    expense: str | None = spec_field(None, description="Purpose of an external payment.")
+    cad_tax_fx: Decimal | None = spec_field(None, gt=0, description="Payment-date CAD value per USD.")
+
+    @model_validator(mode="after")
+    def check_movement(self) -> "MoveForeignCashEvent":
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("A USD cash movement needs a full calendar date")
+        if self.target is None and (not self.expense or self.cad_tax_fx is None):
+            raise ValueError("An external USD payment needs a purpose and payment-date CAD value")
+        if self.target is not None and (self.target == self.source or self.expense or self.cad_tax_fx is not None):
+            raise ValueError("A USD transfer needs another account of the same owner")
+        return self
+
+
+class ExercisePrivateOptionsEvent(EventBase):
+    """Fund a private employee option acquisition and release the resulting shares on a specified date."""
+
+    action: Literal["exercise_private_options"]
+    id: Identifier = spec_field(description="Unique id of the option exercise.")
+    grant: Identifier = spec_field(description="The owner's option grant.")
+    bank: Identifier = spec_field(description="The owner's available CAD bank or USD cash account matching the grant.")
+    quantity: int = spec_field(description="Number of employee options to exercise.", gt=0)
+    market_price: Decimal = spec_field(
+        description="Fair market value per share on acquisition, in the grant currency.", unit="currency", ge=0
+    )
+    tax_fx: Decimal = spec_field(description="CAD per unit of grant currency on acquisition.", gt=0)
+    funding_fx: Decimal | None = spec_field(
+        None, description="CAD per unit for CAD-funded strike costs. Defaults to tax_fx. Omit for USD funding.", gt=0
+    )
+    income_tax_withheld: CashAmount = spec_field(
+        description="Income tax withheld at exercise in the funding currency.", unit="currency"
+    )
+    payroll_withheld: CashAmount = spec_field(
+        Decimal(0), description="Other cash withholding, such as CPP, in the funding currency.", unit="currency"
+    )
+    deduction_fraction: Decimal = spec_field(description="Established deduction fraction, zero or one half.")
+    tax_on: date | None = spec_field(
+        None, description="Effective acquisition for the tax return if later than cash funding."
+    )
+    usd_payment_tax_fx: Decimal | None = spec_field(
+        None, gt=0, description="CAD value per USD disposed on the payment date, when tracking cash FX gains."
+    )
+    available_on: date = spec_field(description="Date the acquired shares become available for sale.")
+
+    @model_validator(mode="after")
+    def check_exercise(self) -> "ExercisePrivateOptionsEvent":
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("Supply the cash funding date as a full calendar date")
+        funding = date(self.at.year, self.at.month, self.at.day)
+        acquisition = self.tax_on or funding
+        if not funding <= acquisition <= self.available_on:
+            raise ValueError("A self-funded exercise needs funding on or before acquisition, then share availability")
+        if self.deduction_fraction not in (Decimal(0), Decimal(".5")):
+            raise ValueError("Supply the applicable option deduction as zero or one half")
+        return self
+
+
+class SellPrivateSharesEvent(EventBase):
+    """Dispose of pooled private shares and later settle the proceeds into an owned cash account."""
+
+    action: Literal["sell_private_shares"]
+    id: Identifier = spec_field(description="Unique disposition id.")
+    holding: Identifier = spec_field(description="Private share holding owned by the seller.")
+    bank: Identifier = spec_field(description="The seller's available CAD bank or matching foreign cash account.")
+    quantity: int = spec_field(description="Number of shares disposed of.", gt=0)
+    price: Decimal = spec_field(description="Gross sale price per share in the stated currency.", unit="currency", gt=0)
+    fees: CashAmount = spec_field(Decimal(0), description="Selling fees in the stated currency.", unit="currency")
+    currency: Literal["CAD", "USD"] = spec_field(description="Currency in which the sale is priced.")
+    disposition_fx: Decimal = spec_field(description="CAD per currency unit for the tax disposition.", gt=0)
+    settlement_fx: Decimal | None = spec_field(
+        None,
+        description="Bank conversion rate after costs for CAD settlement. Omit for same-currency settlement.",
+        gt=0,
+    )
+    settles_on: date = spec_field(description="Date the destination account receives settled cash.")
+
+    @model_validator(mode="after")
+    def check_disposition(self) -> "SellPrivateSharesEvent":
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("Provide the tax-effective disposition date as a full calendar date")
+        if self.settles_on < date(self.at.year, self.at.month, self.at.day):
+            raise ValueError("Settlement cannot precede disposition")
+        if self.currency == "CAD" and self.disposition_fx != 1:
+            raise ValueError("CAD sales use exchange rates of 1")
+        if self.fees >= self.quantity * self.price:
+            raise ValueError("Selling fees must be below gross proceeds")
+        return self
+
+
+class OntarioReportedEmployment(SpecModel):
+    """Employment already paid, with deductible CPP and EI amounts reconciled to the owner's limits."""
+
+    salary: CashAmount = spec_field(description="Taxable employment income.", unit="CAD")
+    base_cpp: CashAmount = spec_field(description="Base CPP eligible for the non-refundable credit.", unit="CAD")
+    enhanced_cpp: CashAmount = spec_field(description="Enhanced CPP and CPP2 deductible from net income.", unit="CAD")
+    ei: CashAmount = spec_field(description="Employment insurance premiums eligible for the credit.", unit="CAD")
+    withheld: CashAmount = spec_field(description="Income tax withheld.", unit="CAD")
+
+
+class OntarioReportedEI(SpecModel):
+    """Taxable Employment Insurance benefits reported for this owner."""
+
+    taxable: CashAmount = spec_field(description="Taxable EI benefits, including any special benefits.", unit="CAD")
+    withheld: CashAmount = spec_field(description="Income tax withheld on EI benefits.", unit="CAD")
+    repayable_regular: CashAmount = spec_field(
+        description="Regular benefits subject to the repayment test. Enter zero for exempt benefits.", unit="CAD"
+    )
+
+    @model_validator(mode="after")
+    def check_regular(self) -> "OntarioReportedEI":
+        if self.repayable_regular > self.taxable:
+            raise ValueError("Regular benefits subject to repayment must be part of taxable EI")
+        return self
+
+
+class OntarioReportedOption(SpecModel):
+    """Option tax amounts recorded after the exercise has been accounted for separately."""
+
+    benefit: CashAmount = spec_field(description="Taxable employment benefit on exercise.", unit="CAD")
+    deduction: CashAmount = spec_field(description="Applicable security option deduction.", unit="CAD")
+    withheld: CashAmount = spec_field(description="Income tax withheld on exercise, excluding CPP.", unit="CAD")
+
+    @model_validator(mode="after")
+    def check_deduction(self) -> "OntarioReportedOption":
+        if self.deduction > self.benefit:
+            raise ValueError("The option deduction cannot exceed the reported benefit")
+        return self
+
+
+class OntarioTaxStatementEvent(EventBase):
+    """Record reported tax amounts whose cash effects are accounted for elsewhere."""
+
+    action: Literal["ontario_tax_statement"]
+    id: Identifier = spec_field(description="Unique id of the reported tax facts.")
+    employment: OntarioReportedEmployment | None = spec_field(None, description="Employment statement amounts.")
+    ei_benefits: OntarioReportedEI | None = spec_field(None, description="Employment Insurance benefit amounts.")
+    option: OntarioReportedOption | None = spec_field(None, description="Security option benefit, deduction and tax.")
+    taxable_interest: CashAmount = spec_field(
+        Decimal(0), description="Additional reported taxable interest.", unit="CAD"
+    )
+    cpp_overpayment: CashAmount = spec_field(
+        Decimal(0), description="Assessed or scenario CPP overpayment credit, determined separately.", unit="CAD"
+    )
+    noneligible_dividends: CashAmount = spec_field(
+        Decimal(0), description="Actual non-eligible Canadian dividends already accounted for in cash.", unit="CAD"
+    )
+
+    cpp_retirement: CashAmount = spec_field(
+        Decimal(0), description="Gross CPP retirement already received.", unit="CAD"
+    )
+    oas_benefits: CashAmount = spec_field(Decimal(0), description="Gross OAS already received.", unit="CAD")
+    pension_withheld: CashAmount = spec_field(
+        Decimal(0), description="Income tax and recovery withheld on those reported public pensions.", unit="CAD"
+    )
+
+    @model_validator(mode="after")
+    def check_statement(self) -> "OntarioTaxStatementEvent":
+        if self.at.day is None:
+            raise ValueError("ontario_tax_statement requires an explicit date")
+        if not any(
+            (
+                self.employment,
+                self.ei_benefits,
+                self.option,
+                self.taxable_interest,
+                self.cpp_overpayment,
+                self.noneligible_dividends,
+                self.cpp_retirement,
+                self.oas_benefits,
+                self.pension_withheld,
+            )
+        ):
+            raise ValueError("Supply at least one amount for the Ontario tax statement")
+        if self.pension_withheld > self.cpp_retirement + self.oas_benefits:
+            raise ValueError("Pension withholding cannot exceed reported benefits")
+        return self
+
+
+class RRSPContributeEvent(EventBase):
+    """Pay a dated contribution from settled cash and claim the full amount in the elected tax year."""
+
+    action: Literal["rrsp_contribute"]
+    pool_cash: bool = spec_field(False, description="Top up from the same owner's other available CAD banks.")
+    bank: Identifier = spec_field(description="Id of the owner's available bank account.")
+    account: Identifier = spec_field(description="Id of the owner's RRSP.")
+    amount: CashAmount = spec_field(description="Exact cash contribution and deduction amount.", unit="CAD", gt=0)
+    deduction_year: Year = spec_field(
+        description="Contribution year or eligible preceding tax year. Start the run by that tax year."
+    )
+
+    @model_validator(mode="after")
+    def check_cash_date(self) -> "RRSPContributeEvent":
+        from ..tax.rrsp import check_deduction_date
+
+        if self.at.day is None or self.at.year is None or self.at.month is None:
+            raise ValueError("rrsp_contribute requires an explicit cash payment date")
+        check_deduction_date(date(self.at.year, self.at.month, self.at.day), self.deduction_year)
+        return self
+
+
+class RegisteredCashEvent(EventBase):
+    @model_validator(mode="after")
+    def check_cash_date(self):
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("A registered withdrawal or transfer needs a full calendar date")
+        return self
+
+    def effective_date(self) -> date:
+        return date(self.at.year, self.at.month, self.at.day)
+
+
+class WithdrawRegisteredEvent(RegisteredCashEvent):
+    """Make a scheduled RRSP, RRIF or TFSA withdrawal."""
+
+    action: Literal["withdraw_registered"]
+    bank: Identifier = spec_field(description="Id of the owner's available CAD bank account.")
+    account: Identifier = spec_field(description="Id of the owner's registered account.")
+    amount: CashAmount = spec_field(
+        description="Exact gross withdrawal, or target gross withdrawals to date.", gt=0, unit="CAD"
+    )
+    withholding: CashAmount | None = spec_field(
+        None, description="Override tax withheld on this payment. Explicit zero means no withholding.", unit="CAD"
+    )
+    cap_to_balance: bool = spec_field(
+        False, description="Allow a scheduled target to exhaust the account and pay only the available gross amount."
+    )
+    year_to_date_target: bool = spec_field(
+        False,
+        description="Withdraw only the amount still required to reach this calendar year's target from this account.",
+    )
+
+
+class RRSPToRRIFEvent(RegisteredCashEvent):
+    """Transfer all or part of an owned RRSP directly to an owned RRIF."""
+
+    action: Literal["rrsp_to_rrif"]
+    rrsp: Identifier = spec_field(description="Id of the source RRSP.")
+    rrif: Identifier = spec_field(description="Id of the receiving RRIF.")
+    amount: CashAmount | None = spec_field(
+        None, description="Principal to transfer. Omit to transfer all.", gt=0, unit="CAD"
+    )
 
 
 class StopContributionEvent(EventBase):
@@ -3216,6 +4043,10 @@ class MortgagePrepaymentEvent(EventBase):
         0.0, description="Minimum spendable bank balance to keep after the prepayment.", unit="USD", allow_inf_nan=False
     )
 
+    reserve_ontario_tax: bool = spec_field(
+        False, description="Protect unpaid and estimated Ontario income tax in addition to the cash floor."
+    )
+
     @model_validator(mode="after")
     def _month_end(self) -> "MortgagePrepaymentEvent":
         when = self.at
@@ -3286,12 +4117,27 @@ Event = Annotated[
     | MoveEvent
     | BuyHomeEvent
     | SellHomeEvent
+    | ConvertHomeToOntarioRentalEvent
+    | HomeValuationEvent
     | OneTimeExpenseEvent
     | RecurringExpenseEvent
     | ChangeSpendingEvent
     | AddAccountEvent
     | ReserveCashEvent
     | ContributeEvent
+    | RRSPContributeEvent
+    | WithdrawRegisteredEvent
+    | RRSPToRRIFEvent
+    | OntarioTaxStatementEvent
+    | CorporateOperatingCashEvent
+    | CorporateInvestmentTransferEvent
+    | CorporatePayrollEvent
+    | CorporatePayDividendEvent
+    | CorporateIncomeTaxEvent
+    | SellPrivateSharesEvent
+    | ExercisePrivateOptionsEvent
+    | ConvertCurrencyEvent
+    | MoveForeignCashEvent
     | StopContributionEvent
     | ChangeContributionEvent
     | ConvertToRothEvent
@@ -3317,12 +4163,27 @@ EVENT_ACTIONS: tuple[str, ...] = (
     "move",
     "buy_home",
     "sell_home",
+    "convert_home_to_ontario_rental",
+    "record_home_valuation",
     "one_time_expense",
     "recurring_expense",
     "change_spending",
     "add_account",
     "reserve_cash",
     "contribute",
+    "rrsp_contribute",
+    "withdraw_registered",
+    "rrsp_to_rrif",
+    "ontario_tax_statement",
+    "corporate_operating_cash",
+    "corporate_investment_transfer",
+    "corporate_payroll",
+    "corporate_pay_dividend",
+    "corporate_income_tax",
+    "sell_private_shares",
+    "exercise_private_options",
+    "convert_currency",
+    "move_foreign_cash",
     "stop_contribution",
     "change_contribution",
     "convert_to_roth",
@@ -3340,7 +4201,9 @@ EVENT_ACTIONS: tuple[str, ...] = (
 
 
 #: Payment sources of the household waterfall (``people.tax_unit.DEFAULT_WITHDRAWAL_ORDER``).
-WithdrawalSource = Literal["bank", "fixed_income", "brokerage", "roth_basis", "pretax", "roth_earnings", "reserve"]
+WithdrawalSource = Literal[
+    "bank", "fixed_income", "brokerage", "roth_basis", "pretax", "roth_earnings", "reserve", "tax_free"
+]
 
 
 # --- Top level -----------------------------------------------------------------------------------
@@ -3355,6 +4218,9 @@ class HouseholdSpec(SpecModel):
     meta: Meta = spec_field(description="Run metadata.")
     economy: Economy | None = spec_field(None, description="Economy overrides.")
     people: list[Person] = spec_field(description="The people in the household (one family).", min_length=1)
+    corporations: list[CorporationSpec] = spec_field(
+        default_factory=list, description="Wholly owned Canadian corporations with separate assets and obligations."
+    )
     relationships: Relationships = spec_field(default_factory=Relationships, description="Marriages.")
     withdrawal_order: list[WithdrawalSource] | None = spec_field(
         None,

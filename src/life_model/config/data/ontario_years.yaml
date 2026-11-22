@@ -1,0 +1,62 @@
+# vintage: 2026, sources: CRA T4127 January 122nd edition, TD1 and TD1ON.
+2026:
+  federal_brackets: [[58523, ".14"], [117045, ".205"], [181440, ".26"], [258482, ".29"], [null, ".33"]]
+  ontario_brackets: [[53891, ".0505"], [107785, ".0915"], [150000, ".1116"], [220000, ".1216"], [null, ".1316"]]
+  federal_basic_max: 16452
+  federal_basic_min: 14829
+  employment_amount: 1501
+  # vintage: 2026, sources: ESDC Old Age Security recovery tax and benefit amounts.
+  oas_recovery_threshold: 95323
+  oas_recovery_rate: ".15"
+  oas_age_75_increase: ".10"
+  federal_age_amount: 9208
+  federal_age_threshold: 46432
+  ontario_basic_amount: 12989
+  ontario_age_amount: 6342
+  ontario_age_threshold: 47210
+  ontario_pension_limit: 1796
+  ontario_basic_reduction: 300
+  ontario_surtax: [[5818, ".20"], [7446, ".36"]]
+  # vintage: 2026, sources: CRA taxable dividends and federal dividend tax credit, Ontario dividend tax credit table.
+  noneligible_dividend_grossup: "1.15"
+  federal_noneligible_dividend_credit: ".090301"
+  ontario_noneligible_dividend_credit: ".029863"
+  cpp_base_rate: ".0495"
+  cpp_additional_rate: ".01"
+  cpp2_rate: ".04"
+  ympe: 74600
+  yampe: 85000
+  ei_max_earnings: 68900
+  ei_rate: ".0163"
+
+# vintage: 2027, source: CRA T4127 January 124th edition, BPA formula and chapter 8.
+# Age and Ontario pension amounts indexed under federal ITA s. 117.1 and Ontario Taxation Act s. 23.
+2027:
+  federal_brackets: [[60044, ".14"], [120088, ".205"], [186157, ".26"], [265203, ".29"], [null, ".33"]]
+  ontario_brackets: [[55023, ".0505"], [110049, ".0915"], [150000, ".1116"], [220000, ".1216"], [null, ".1316"]]
+  federal_basic_max: 16879
+  federal_basic_min: 15214
+  employment_amount: 1540
+  # vintage: 2027, projected threshold using 95,323 and CRA T4127 Table 8.2 federal indexation (2.6%).
+  oas_recovery_threshold: 97801
+  oas_recovery_rate: ".15"
+  oas_age_75_increase: ".10"
+  federal_age_amount: 9447
+  federal_age_threshold: 47639
+  ontario_basic_amount: 13261
+  ontario_age_amount: 6475
+  ontario_age_threshold: 48201
+  ontario_pension_limit: 1834
+  ontario_basic_reduction: 306
+  ontario_surtax: [[5940, ".20"], [7603, ".36"]]
+  # vintage: 2027, sources: CRA taxable dividends and federal dividend tax credit, Ontario dividend tax credit table.
+  noneligible_dividend_grossup: "1.15"
+  federal_noneligible_dividend_credit: ".090301"
+  ontario_noneligible_dividend_credit: ".019863"
+  cpp_base_rate: ".0475"
+  cpp_additional_rate: ".01"
+  cpp2_rate: ".04"
+  ympe: 76700
+  yampe: 87400
+  ei_max_earnings: 70800
+  ei_rate: ".0164"

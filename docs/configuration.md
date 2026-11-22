@@ -19,6 +19,16 @@ Field defaults live only in the YAML/Pydantic models; call sites do not carry
 their own hardcoded fallbacks. Each dated section of the YAML carries a
 `# vintage: <year>, source: <doc>` comment citing the primary IRS/SSA source.
 
+## Ontario year tables
+
+The Canadian policies share the published federal and Ontario personal tax,
+CPP and EI parameters in `src/life_model/config/data/ontario_years.yaml`.
+Append a sourced year with its own rate table when new figures are available.
+The latest table is 2027. Canadian payroll selects its table by payday year,
+and personal tax selects by return year. Household scenarios can explicitly
+carry forward a published set of rates with
+`meta.ontario_retirement_tax.freeze_after`.
+
 ## Per-model configuration
 
 Configuration is resolved when a `LifeModel` is constructed, not at import time
