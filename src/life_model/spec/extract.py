@@ -25,6 +25,7 @@ the state); retired jobs are omitted.
 """
 
 import re
+from dataclasses import asdict
 from datetime import date
 from decimal import Decimal
 from typing import Any, Literal, cast
@@ -326,6 +327,7 @@ class _Extractor:
             accounts=_sorted(self.accounts(person, job_ids), ACCOUNT_KIND_ORDER),
             tfsa_room=self.tfsa_room(person),
             rrsp_room=self.rrsp_room(person),
+            unpaid_bills_debt=person.debt,
             debts=_sorted(self.debts(person, housing), DEBT_KIND_ORDER),
             housing=_sorted(housing, HOUSING_KIND_ORDER),
             insurance=_sorted(self.insurance(person), INSURANCE_KIND_ORDER),
@@ -482,8 +484,6 @@ class _Extractor:
                 continue  # extracted as the person's self_employment
             payroll = None
             if job.payroll is not None:
-                from dataclasses import asdict
-
                 values = asdict(job.payroll)
                 values["withholding"] = _withholding_spec(job.payroll.withholding)
                 if any(values.values()):
@@ -1133,7 +1133,7 @@ class _Extractor:
                         credit_limit=line.credit_limit,
                         rate_pct=line.yearly_interest_rate,
                         drawn_principal=float(line.drawn_principal),
-                        accrued_interest=line.accrued_interest,
+                        accrued_interest=float(line.accrued_interest),
                         accrued_through=line.accrued_through,
                     )
                 )
@@ -1178,11 +1178,13 @@ class _Extractor:
                         basis_amount=float(cap.basis_amount),
                         used=float(cap.used_for(as_of)),
                     )
+                renewal_state = m.renewal_state
                 mortgage = s.Mortgage(
                     start_year=start_year,
                     escrow_monthly=m.escrow_monthly if not self.stepped else None,
                     rate_compounding=m.rate_compounding,
                     prepayment_privilege=privilege,
+                    renewal_state=None if renewal_state is None else s.MortgageRenewalState(**asdict(renewal_state)),
                     **terms,
                 )
             e = home.expenses
@@ -1424,9 +1426,6 @@ class _Extractor:
             if isinstance(source, s.Marriage):
                 retimed.append(source.model_copy(update={"year": first_year}))
                 continue
-            if isinstance(source, s.MortgageRenewalEvent):
-                retimed.append(source)  # Always dated in an explicit calendar month.
-                continue
             at = s.At(year=first_year, month=first_month, day=first_day)
             relative = source.at.relative
             if first_day is not None and relative is not None:
@@ -1436,23 +1435,30 @@ class _Extractor:
             update: dict[str, Any] = {"at": at}
             if isinstance(source, s.RecurringExpenseEvent):
                 update["until"] = s.At(year=max(when[0] for when in dates[id(source)]))
+            if isinstance(source, s.MortgageMaturityEvent):
+                owner = next((p for p in self.people() if any(self.item_id(h) == source.home for h in p.homes)), None)
+                if owner is not None:
+                    update["person"] = self.pid(owner)
             retimed.append(source.model_copy(update=update))
         return retimed
 
     def events(self) -> list:
         from ..debt.bridge import DatedBridgeLine
 
-        closed = {
-            self.item_id(line) for line in self.model.agents if isinstance(line, DatedBridgeLine) and line.home.sold
-        }
-        events = [source for source in self.pending_sources() if not isinstance(source, s.Marriage)]
-        events = [event for event in events if not (isinstance(event, s.RepayBridgeEvent) and event.bridge in closed)]
-        events = [
-            event.model_copy(update={"bridge": None})
-            if isinstance(event, s.MortgageMaturityEvent) and event.bridge in closed
-            else event
-            for event in events
-        ]
+        lines = {self.item_id(line): line for line in self.model.agents if isinstance(line, DatedBridgeLine)}
+        events: list[s.Event] = []
+        for source in self.pending_sources():
+            if isinstance(source, s.Marriage):
+                continue
+            if isinstance(source, s.BridgeEvent) and (line := lines.get(source.bridge)) is not None:
+                if line.home.sold or line.person.is_deceased:
+                    continue
+                source = source.model_copy(update={"person": self.pid(line.person)})
+            if isinstance(source, s.MortgageMaturityEvent):
+                bridge = lines.get(source.bridge)
+                if bridge is not None and bridge.home.sold:
+                    source = source.model_copy(update={"bridge": None})
+            events.append(source)
         events += [record["event"] for record in self.build_time]
         return _sorted(events)
 
@@ -1498,8 +1504,6 @@ def spec_from_model(model) -> s.HouseholdSpec:
 
 def _withholding_spec(policy):
     """The spec form of a core withholding policy."""
-    from dataclasses import asdict
-
     from ..tax.payments import W4
 
     if policy is None:

@@ -363,6 +363,44 @@ class TestEventTiming(unittest.TestCase):
                 with self.assertRaisesRegex(SpecValidationError, message):
                     build(data)
 
+    def test_annual_expense_rejects_a_leap_day_repeated_into_a_common_year(self):
+        for at, until in (
+            ({"year": 2028, "month": 2, "day": 29}, 2030),
+            ({"year": 2028, "month": 2, "day": 29}, None),
+            ({"relative": {"after": "anchor"}}, 2030),
+        ):
+            with self.subTest(at=at, until=until):
+                data = minimal()
+                data["events"] = [
+                    {
+                        "id": "anchor",
+                        "action": "one_time_expense",
+                        "person": "alex",
+                        "at": {"year": 2028, "month": 2, "day": 29},
+                        "amount": 0,
+                    },
+                    {"action": "recurring_expense", "person": "alex", "at": at, "until": until, "amount_annual": 1},
+                ]
+                with self.assertRaisesRegex(SpecValidationError, "2029 has no February 29"):
+                    build(data)
+
+    def test_leap_day_expense_can_run_once_within_the_horizon(self):
+        for end, until in ((2028, 2030), (2030, 2028)):
+            with self.subTest(end=end, until=until):
+                data = minimal()
+                data["meta"]["end_year"] = end
+                data["events"] = [
+                    {
+                        "action": "recurring_expense",
+                        "person": "alex",
+                        "at": {"year": 2028, "month": 2, "day": 29},
+                        "until": until,
+                        "amount_annual": 1,
+                    }
+                ]
+                (expense,) = build(data).life_events.life_events
+                self.assertEqual((expense.year, expense.month, expense.day), (2028, 2, 29))
+
     def test_relative_event_follows_its_dated_anchor_after_snapshot(self):
         data = minimal()
         data["events"] = [

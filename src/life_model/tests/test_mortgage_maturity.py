@@ -4,14 +4,13 @@
 # https://github.com/sw23/life-model/blob/main/LICENSE
 
 import unittest
-from datetime import date
 
 from pydantic import ValidationError
 
-from ..checks import assert_conservation
-from ..housing.home import MortgagePayoffShortfall
+from ..checks import account_residuals, assert_conservation
 from ..model import EventKind
 from ..spec import build_household, spec_from_model, validate_spec
+from ..spec.io import Format, dumps, loads
 from .spec_helpers import fixture_config, minimal, spec_of
 
 
@@ -59,9 +58,27 @@ def maturity_inputs(sale_day=20):
             "home": "home",
             "at": {"year": 2026, "month": 1, "day": 28},
             "interest_due": 500,
-            "cash_to_keep": 10000,
+            "cash_floor": 10000,
         },
     ]
+    return inputs
+
+
+def inherited_mortgage_inputs():
+    inputs = maturity_inputs()
+    inputs["people"].append(
+        {
+            "id": "bo",
+            "name": "Bo",
+            "age": 41,
+            "birth": "1985-01",
+            "retirement_age": 65,
+            "accounts": [{"kind": "bank", "balance": 0, "interest_pct": 0}],
+            "spending": {"amount_annual": 0, "growth_pct": 2},
+        }
+    )
+    inputs["relationships"] = {"marriages": [{"spouses": ["alex", "bo"]}]}
+    inputs["events"].append({"action": "die", "person": "alex", "at": 2027})
     return inputs
 
 
@@ -91,19 +108,83 @@ class TestMortgageMaturity(unittest.TestCase):
                 self.assertEqual(resumed.items["home"].mortgage.principal, 0)
                 self.assertFalse(snapshot.events)
 
-    def test_proceeds_after_the_due_date_leave_a_shortfall_without_partial_payment(self):
+    def test_later_proceeds_do_not_fund_the_payoff_on_its_due_date(self):
         built = build_household(spec_of(maturity_inputs(31)), config=fixture_config(), collect="month")
         loan = built.items["home"].mortgage
-        with self.assertRaises(MortgagePayoffShortfall) as raised:
-            built.model.step()
-        failure = raised.exception
-        self.assertEqual((failure.when, failure.amount, failure.bank_cash), (date(2026, 1, 28), 53500, 32000))
-        self.assertEqual((failure.payoff, failure.cash_to_keep), (75500, 10000))
-        self.assertEqual(built.items["cash"].balance, 32000)
+        built.model.step()
+        self.assertEqual(loan.principal, 0)
+        self.assertEqual(loan.interest_paid_this_year, 500)
+        self.assertEqual(loan.person.debt, 53500)
+        self.assertEqual(built.items["cash"].balance, 70000)
         self.assertEqual(built.items["reserve"].balance, 80000)
-        self.assertEqual(loan.principal, 75000)
-        self.assertEqual(loan.stat_principal_payment_history, [])
-        self.assertFalse(built.model.ledger.to_records())
+        (payoff,) = built.model.event_log.of_kind(EventKind.MORTGAGE_PAID_AT_MATURITY)
+        self.assertEqual((payoff.details["date"], payoff.details["shortfall_debt"]), ("2026-01-28", 53500))
+        self.assertEqual(payoff.details["cash_floor"], 10000)
+        shortfalls = built.model.event_log.of_kind(EventKind.SHORTFALL_DEBT)
+        self.assertEqual([e.amount for e in shortfalls], [53000, 500])
+        self.assertEqual(account_residuals(built.model, 2026, month=1), {})
+
+        snapshot = spec_from_model(built.model)
+        runs = [built]
+        formats: tuple[Format, ...] = ("json", "yaml")
+        for fmt in formats:
+            loaded = loads(dumps(snapshot, fmt), fmt)
+            runs.append(build_household(loaded, config=fixture_config(), collect="month"))
+        rate = fixture_config().debt.effective_unpaid_balance_interest_rate / 1200
+        for run in runs:
+            owner = run.items["home"].mortgage.person
+            self.assertEqual(owner.debt, 53500)
+            run.model.step()
+            self.assertEqual(owner.debt, 0)
+            self.assertAlmostEqual(run.items["cash"].balance, 70000 - 53500 * (1 + rate), places=6)
+            self.assertEqual(account_residuals(run.model, 2026, month=2), {})
+            assert_conservation(run.model, monthly=True)
+
+    def test_already_below_cash_floor_borrows_only_the_payoff(self):
+        inputs = maturity_inputs()
+        inputs["events"] = inputs["events"][1:]
+        inputs["people"][0]["accounts"][0]["balance"] = 5000
+        built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
+        loan = built.items["home"].mortgage
+        built.model.step()
+        self.assertEqual(loan.principal, 0)
+        self.assertEqual(loan.person.debt, 75500)
+        self.assertEqual(built.items["cash"].balance, 5000)
+        self.assertEqual(built.items["reserve"].balance, 80000)
+        assert_conservation(built.model, monthly=True)
+
+    def test_dated_payoff_follows_the_home_to_the_surviving_spouse(self):
+        inputs = inherited_mortgage_inputs()
+        inputs["people"][0]["accounts"][0]["balance"] = 75000
+        for event in inputs["events"][:2]:
+            event["at"].update(year=2027, month=6)
+        built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
+        built.model.step_year()
+        for _ in range(6):
+            built.model.step()
+        loan = built.items["home"].mortgage
+        self.assertEqual(loan.person.name, "Bo")
+        self.assertEqual(loan.principal, 0)
+        (payoff,) = built.model.event_log.of_kind(EventKind.MORTGAGE_PAID_AT_MATURITY)
+        self.assertEqual((payoff.person_name, payoff.details["date"]), ("Bo", "2027-06-28"))
+        self.assertFalse(built.model.event_log.of_kind(EventKind.SHORTFALL_DEBT))
+        assert_conservation(built.model, monthly=True)
+
+    def test_pending_payoff_saves_the_surviving_owner(self):
+        inputs = inherited_mortgage_inputs()
+        inputs["people"][0]["accounts"][0]["balance"] = 125000
+        inputs["events"].pop(0)
+        inputs["events"][0]["at"].update(year=2027, month=2)
+        built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
+        built.model.step_year()
+        built.model.step()
+        snapshot = spec_from_model(built.model)
+        self.assertEqual([event.person for event in snapshot.events], ["bo"])
+        resumed = build_household(snapshot, config=fixture_config(), collect="month")
+        for run in (built, resumed):
+            run.model.step()
+            self.assertEqual(run.items["home"].mortgage.principal, 0)
+            assert_conservation(run.model, monthly=True)
 
     def test_payoff_requires_a_full_date_and_an_owned_home_with_a_mortgage(self):
         inputs = maturity_inputs()

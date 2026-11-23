@@ -2,6 +2,7 @@ import unittest
 from decimal import Decimal
 
 from life_model.checks import assert_conservation
+from life_model.debt.bridge import BridgeRepaymentShortfall
 from life_model.housing.home import MortgagePayoffShortfall
 from life_model.tests.test_private_share_sale import build, sale_scenario
 
@@ -46,6 +47,32 @@ def maturity_scenario(settles_on):
 
 
 class MortgageMaturityTests(unittest.TestCase):
+    def test_early_bridge_repayment_leaves_the_bridge_outstanding(self):
+        spec = maturity_scenario("2027-01-31")
+        spec["people"][0]["debts"] = [
+            {"kind": "bridge_line", "id": "line", "home": "old-home", "credit_limit": 60000, "rate_pct": 5.2}
+        ]
+        spec["events"][1]["bridge"] = "line"
+        spec["events"].append(
+            {
+                "action": "repay_bridge",
+                "id": "repay",
+                "person": "owner",
+                "bridge": "line",
+                "at": {"year": 2027, "month": 1, "day": 30},
+                "cash_floor": 5000,
+            }
+        )
+        model = build(spec)
+        with self.assertRaises(BridgeRepaymentShortfall) as failed:
+            model.step()
+        # The $53,500 draw has accrued two days of interest. Spendable cash is $10,000.
+        self.assertEqual(failed.exception.payoff, Decimal("53515.24"))
+        self.assertEqual(failed.exception.amount, Decimal("48515.24"))
+        self.assertEqual(model.household.items["line"].drawn_principal, 53500)
+        self.assertEqual(model.household.people["owner"].usable_bank_balance, 10000)
+        self.assertEqual(model.household.people["owner"].debt, 0)
+
     def test_same_day_share_settlement_funds_principal_and_quoted_interest(self):
         model = build(maturity_scenario("2027-01-28"))
         model.step()

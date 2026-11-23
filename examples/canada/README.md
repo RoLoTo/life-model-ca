@@ -47,7 +47,7 @@ The older one-paycheque prototype remains available as
 
 Add `pay_mortgage_at_maturity` with the home id, a full calendar date,
 and the interest due on that date. The event uses the loan’s current
-principal and settled bank cash. Optionally set `cash_to_keep` for a
+principal and settled bank cash. Optionally set `cash_floor` for a
 minimum cash balance after the payoff. A share sale already awaiting
 settlement makes its proceeds available on the settlement date.
 
@@ -104,7 +104,7 @@ price determines the commission, and both costs reduce settled proceeds.
 
 Schedule a `prepay_mortgage` event on the last day of a month. The
 payment uses settled bank cash after that month's bills. Set
-`cash_to_keep` for a cash floor and `cash_fraction` for the share of
+`cash_floor` for a cash floor and `cash_fraction` for the share of
 remaining cash to pay. Under the Ontario return policy,
 `reserve_ontario_tax: true` also retains outstanding and estimated
 current-year tax using income, credits, and withholding recorded to date.

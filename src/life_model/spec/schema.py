@@ -33,7 +33,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..debt.terms import MortgageRateCompounding
 from ..housing.prepayment import MortgagePrepaymentPrivilege as ContractPrepaymentPrivilege
@@ -2045,9 +2045,6 @@ class HomeEquityLine(SpecModel):
         return self
 
 
-BridgeMoney = Annotated[float, Field(ge=0, multiple_of=0.01, allow_inf_nan=False)]
-
-
 class BridgeLine(SpecModel):
     """Approved credit secured by the borrower's home with simple actual-days/365 interest."""
 
@@ -2057,14 +2054,17 @@ class BridgeLine(SpecModel):
     id: Identifier | None = _id_field("debt")
     home: Identifier = spec_field(description="Id of the home securing the line.", core="DatedBridgeLine.home")
     name: str | None = spec_field(None, description="Display name.")
-    credit_limit: BridgeMoney = spec_field(description="Maximum drawn principal.", unit="USD")
+    credit_limit: NonNegativeMoney = spec_field(
+        description="Maximum drawn principal in whole cents.", unit="USD", multiple_of=0.01, allow_inf_nan=False
+    )
     rate_pct: NonNegativePercent = spec_field(description="Annual simple interest rate.", unit="percent")
-    drawn_principal: BridgeMoney = spec_field(0.0, description="Opening drawn principal.", unit="USD")
-    accrued_interest: Decimal = spec_field(
-        Decimal(0),
-        description="Opening unpaid interest at full accrual precision.",
+    drawn_principal: NonNegativeMoney = spec_field(
+        0.0, description="Opening drawn principal in whole cents.", unit="USD", multiple_of=0.01, allow_inf_nan=False
+    )
+    accrued_interest: NonNegativeMoney = spec_field(
+        0.0,
+        description="Opening unpaid interest, which can include fractional cents.",
         unit="USD",
-        ge=0,
         allow_inf_nan=False,
     )
     accrued_through: date | None = spec_field(None, description="Date through which opening interest was calculated.")
@@ -2110,11 +2110,30 @@ class MortgagePrepaymentPrivilege(SpecModel):
             raise ValueError("A prepayment cap needs a basis amount when the original principal is unknown")
         return ContractPrepaymentPrivilege(
             anniversary=self.anniversary,
-            annual_limit_pct=Decimal(str(self.annual_limit_pct)),
-            basis_amount=Decimal(str(basis)),
+            annual_limit_pct=self.annual_limit_pct,
+            basis_amount=basis,
             as_of=as_of,
-            used=Decimal(str(self.used)),
+            used=self.used,
         )
+
+
+class MortgageRenewalState(SpecModel):
+    """The PMI schedule and acquisition debt limits saved when a mortgage has renewed."""
+
+    CORE_CLASS = "MortgageRenewalState"
+
+    original_amount: NonNegativeMoney = spec_field(
+        description="Principal at the start of the PMI schedule.", unit="USD"
+    )
+    rate_pct: NonNegativePercent = spec_field(description="Annual rate on a monthly compounding basis.", unit="percent")
+    payment_monthly: NonNegativeMoney = spec_field(description="Scheduled principal and interest.", unit="USD/month")
+    term_months: int = spec_field(description="Full term of the PMI schedule.", unit="month", ge=0)
+    payments_made: int = spec_field(description="Payments made across all renewal terms.", unit="month", ge=0)
+    origination: YearMonth | None = spec_field(None, description="Origination month of the PMI schedule, when known.")
+    acquisition_cap: NonNegativeMoney | None = spec_field(
+        None, description="Maximum acquisition debt balance (omit if all debt qualifies).", unit="USD"
+    )
+    grandfathered_cap: NonNegativeMoney = spec_field(0.0, description="Maximum grandfathered debt balance.", unit="USD")
 
 
 class Mortgage(_LoanTerms):
@@ -2135,6 +2154,11 @@ class Mortgage(_LoanTerms):
     )
     prepayment_privilege: MortgagePrepaymentPrivilege | None = spec_field(
         None, description="Optional contract cap on lump sums.", core="Mortgage.prepayment_privilege"
+    )
+    renewal_state: MortgageRenewalState | None = spec_field(
+        None,
+        description="PMI and acquisition debt state saved alongside the current repayment schedule after renewal.",
+        core="Mortgage.renewal_state",
     )
 
     start_year: Year | None = spec_field(
@@ -3097,6 +3121,13 @@ class Person(SpecModel):
     accounts: list[Account] = spec_field(default_factory=list, description="Accounts, discriminated by 'kind'.")
     rrsp_room: CanadianRRSPRoom | None = spec_field(None, description="Shared room for dated RRSP contributions.")
     tfsa_room: CanadianTFSARoom | None = spec_field(None, description="One shared contribution room for this owner.")
+    unpaid_bills_debt: NonNegativeMoney = spec_field(
+        0.0,
+        description="Opening balance of unpaid bills carried into the first month's settlement.",
+        unit="USD",
+        core="Person.unpaid_bills_debt",
+        allow_inf_nan=False,
+    )
     debts: list[Debt] = spec_field(
         default_factory=list, description="Debts (car, student, credit_card, heloc, bridge_line)."
     )
@@ -3445,7 +3476,11 @@ class OneTimeExpenseEvent(EventBase):
 
 
 class RecurringExpenseEvent(EventBase):
-    """An expense added every year from ``at`` through ``until`` (inclusive)."""
+    """An expense added every year from ``at`` through ``until`` (inclusive).
+
+    The calendar day must exist in each year the expense runs. A February 29 expense can run
+    once when its recurrence ends in the starting year.
+    """
 
     action: Literal["recurring_expense"]
     amount_annual: NonNegativeMoney = spec_field(description="Amount per year.", unit="USD/year")
@@ -3973,19 +4008,11 @@ class RefinanceEvent(EventBase):
         return self
 
 
-class MortgageRenewalAt(At):
-    """A calendar month, with the first day implied when omitted."""
-
-    year: Year = spec_field(description="Calendar year of the renewal.", unit="year")
-    month: int = spec_field(description="Calendar month of the renewal.", unit="month", ge=1, le=12)
-    day: Literal[1] | None = spec_field(None, description="If supplied, must be the first day.")
-
-
 class MortgageRenewalEvent(EventBase):
     """Renew a mortgage before the specified month's payment, with no new borrowing or fees."""
 
     action: Literal["renew_mortgage"]
-    at: MortgageRenewalAt = spec_field(description="Effective month as YYYY-MM or {year, month, day: 1}.")
+    at: At = spec_field(description="Effective month as YYYY-MM or {year, month, day: 1}.")
     home: Identifier = spec_field(description="Id of the borrower's home with the mortgage.")
     rate_pct: NonNegativePercent = spec_field(description="New quoted annual rate.", unit="percent")
     rate_compounding: MortgageRateCompounding = spec_field(
@@ -4008,20 +4035,35 @@ class MortgageRenewalEvent(EventBase):
             raise ValueError("A renewal's new prepayment privilege starts with zero usage")
         return self
 
+    @model_validator(mode="after")
+    def _first_day(self) -> "MortgageRenewalEvent":
+        when = self.at
+        if when.year is None or when.month is None or when.day not in (None, 1):
+            raise ValueError("A mortgage renewal requires the first day of an explicit calendar month")
+        return self
+
 
 class MortgageMaturityEvent(EventBase):
-    """Pay a mortgage's outstanding principal and quoted final interest from bank cash on a specific date."""
+    """Pay the live principal and quoted final interest on the contractual maturity date supplied by the caller.
+
+    The engine accepts the supplied date and bypasses prepayment caps and fees. The Ontario return policy
+    reports a funding gap before settlement. Other households carry the gap as unpaid-bills debt.
+    """
 
     action: Literal["pay_mortgage_at_maturity"]
     home: Identifier = spec_field(description="Id of the borrower's home with the mortgage.")
     interest_due: NonNegativeMoney = spec_field(
         description="Lender's quoted interest due at payoff.", unit="USD", allow_inf_nan=False
     )
-    cash_to_keep: NonNegativeMoney = spec_field(
-        0.0, description="Minimum spendable bank cash to keep after payoff.", unit="USD", allow_inf_nan=False
+    cash_floor: NonNegativeMoney = spec_field(
+        0.0,
+        description="Spendable bank cash protected from payoff withdrawals.",
+        unit="USD",
+        allow_inf_nan=False,
+        validation_alias=AliasChoices("cash_floor", "cash_to_keep"),
     )
     bridge: Identifier | None = spec_field(
-        None, description="Borrower's approved bridge line. Draw only the cash shortfall including the floor."
+        None, description="Borrower's approved bridge line. Draw up to its headroom to fund the payoff and cash floor."
     )
 
     @model_validator(mode="after")
@@ -4032,15 +4074,19 @@ class MortgageMaturityEvent(EventBase):
 
 
 class MortgagePrepaymentEvent(EventBase):
-    """Apply surplus spendable bank cash to mortgage principal after the month's bills."""
+    """Apply surplus bank cash to mortgage principal after bills, reserving cash for taxes."""
 
     action: Literal["prepay_mortgage"]
     home: Identifier = spec_field(description="Id of the borrower's home with the mortgage.")
     cash_fraction: float = spec_field(
-        1.0, description="Fraction of spendable cash above the floor to pay, between zero and one.", ge=0, le=1
+        1.0, description="Fraction of cash above the tax holdback and floor to pay, from zero to one.", ge=0, le=1
     )
-    cash_to_keep: NonNegativeMoney = spec_field(
-        0.0, description="Minimum spendable bank balance to keep after the prepayment.", unit="USD", allow_inf_nan=False
+    cash_floor: NonNegativeMoney = spec_field(
+        0.0,
+        description="Spendable cash to retain in addition to the tax holdback.",
+        unit="USD",
+        allow_inf_nan=False,
+        validation_alias=AliasChoices("cash_floor", "cash_to_keep"),
     )
 
     reserve_ontario_tax: bool = spec_field(
@@ -4080,14 +4126,26 @@ class DrawBridgeEvent(BridgeEvent):
     """Deposit a dated draw from approved secured credit into bank cash."""
 
     action: Literal["draw_bridge"]
-    amount: BridgeMoney = spec_field(description="Required draw.", unit="USD", gt=0)
+    amount: NonNegativeMoney = spec_field(
+        description="Required draw in whole cents.", unit="USD", gt=0, multiple_of=0.01, allow_inf_nan=False
+    )
 
 
 class RepayBridgeEvent(BridgeEvent):
-    """Repay the bridge's drawn principal and accrued interest from spendable bank cash."""
+    """Repay the bridge from spendable cash.
+
+    The Ontario return policy reports a funding gap before settlement. Other households carry the gap as unpaid-bills debt.
+    """
 
     action: Literal["repay_bridge"]
-    cash_to_keep: BridgeMoney = spec_field(0.0, description="Spendable cash floor after repayment.", unit="USD")
+    cash_floor: NonNegativeMoney = spec_field(
+        0.0,
+        description="Spendable cash protected from repayment.",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
+        validation_alias=AliasChoices("cash_floor", "cash_to_keep"),
+    )
 
 
 class DisabilityEvent(EventBase):

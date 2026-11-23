@@ -55,10 +55,23 @@ def prepayment_inputs(**prepayment):
             "home": "home",
             "at": {"year": 2026, "month": 1, "day": 31},
             "cash_fraction": 0.5,
-            "cash_to_keep": 3000,
+            "cash_floor": 3000,
             **prepayment,
         },
     ]
+    return inputs
+
+
+def taxable_prepayment_inputs(month, day, *, floor=0, fraction=1):
+    inputs = prepayment_inputs(at={"year": 2026, "month": month, "day": day}, cash_floor=floor, cash_fraction=fraction)
+    inputs["meta"]["accepted_warnings"] = ["fixed_growth"]
+    del inputs["events"][0]
+    person = inputs["people"][0]
+    person["housing"].pop()
+    person["housing"][0]["mortgage"].update(original_amount=120000, term_months=120)
+    person["jobs"] = [{"id": "job", "company": "Co", "salary_annual": 80000, "raise_pct": 2}]
+    person["spending"]["amount_annual"] = 26000
+    person["accounts"].append({"kind": "brokerage", "id": "brokerage", "balance": 50000, "growth_pct": 0})
     return inputs
 
 
@@ -106,7 +119,7 @@ class TestMortgagePrepayment(unittest.TestCase):
             (3000, 5000.01, 3250),
         ):
             with self.subTest(wanted_floor=wanted_floor, opening_cash=opening_cash):
-                inputs = prepayment_inputs(cash_to_keep=wanted_floor, cash_fraction=0.5 if opening_cash < 6000 else 1)
+                inputs = prepayment_inputs(cash_floor=wanted_floor, cash_fraction=0.5 if opening_cash < 6000 else 1)
                 inputs["people"][0]["accounts"][0]["balance"] = opening_cash
                 built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
                 built.model.step()
@@ -134,6 +147,62 @@ class TestMortgagePrepayment(unittest.TestCase):
         self.assertEqual(built.items["bank"].balance, 18400)
         self.assertEqual(built.items["reserve"].balance, 20000)
         self.assertFalse(built.model.event_log.of_kind(EventKind.MORTGAGE_PREPAYMENT))
+        assert_conservation(built.model, monthly=True)
+
+    def test_prepayment_holds_back_year_to_date_tax_and_applies_the_floor_to_surplus(self):
+        inputs = taxable_prepayment_inputs(1, 31, floor=3000, fraction=0.5)
+        built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
+        built.model.step()
+        (payment,) = built.model.event_log.of_kind(EventKind.MORTGAGE_PREPAYMENT)
+        # $21,120 annual tax: $11,500 federal, $3,500 state and $6,120 payroll.
+        self.assertEqual(payment.amount, (8500 - 21120 / 12 - 3000) * 0.5)
+        self.assertEqual(payment.details["tax_holdback"], 1760)
+        self.assertEqual(built.items["bank"].balance, 6630)
+        self.assertEqual(built.items["reserve"].balance, 20000)
+        assert_conservation(built.model, monthly=True)
+
+    def test_december_prepayment_keeps_cash_for_tax_without_selling_brokerage(self):
+        inputs = taxable_prepayment_inputs(12, 31)
+        built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
+        built.model.step_year()
+        (payment,) = built.model.event_log.of_kind(EventKind.MORTGAGE_PREPAYMENT)
+        self.assertEqual(payment.amount, 47000 - 21120)
+        self.assertEqual(built.items["home"].mortgage.principal, 82120)
+        self.assertAlmostEqual(built.items["bank"].balance, 0, places=2)
+        self.assertEqual(built.items["brokerage"].balance, 50000)
+        self.assertFalse(built.model.event_log.of_kind(EventKind.FORCED_SALE))
+        assert_conservation(built.model, monthly=True)
+
+    def test_prepayment_holds_back_last_years_unpaid_balance_until_april(self):
+        inputs = taxable_prepayment_inputs(3, 31)
+        inputs["events"][0]["at"]["year"] = 2027
+        inputs["people"][0]["estimated_payments"] = {"quarterly": 0}
+        built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
+        mortgage = built.items["home"].mortgage
+        built.model.step_year()
+        prior_balance = mortgage.person.taxes_owed
+        self.assertGreater(prior_balance, 0)
+        for _ in range(3):
+            built.model.step()
+        (payment,) = built.model.event_log.of_kind(EventKind.MORTGAGE_PREPAYMENT)
+        # The new year's $81,600 salary has $21,722.40 of projected annual tax.
+        self.assertAlmostEqual(payment.details["tax_holdback"], prior_balance + 21722.40 / 4, places=6)
+        self.assertEqual(mortgage.person.taxes_owed, prior_balance)
+        self.assertGreaterEqual(built.items["bank"].balance, prior_balance + 21722.40 / 4 - 1e-8)
+        built.model.step()
+        self.assertEqual(mortgage.person.taxes_owed, 0)
+        self.assertFalse(built.model.event_log.of_kind(EventKind.FORCED_SALE))
+        assert_conservation(built.model, monthly=True)
+
+    def test_december_sweep_uses_its_own_floor_after_prepayment_and_taxes(self):
+        inputs = taxable_prepayment_inputs(12, 31, floor=25000)
+        inputs["people"][0]["savings_policy"] = {"cash_floor": 10000, "sweep_to": "brokerage"}
+        built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
+        built.model.step_year()
+        (payment,) = built.model.event_log.of_kind(EventKind.MORTGAGE_PREPAYMENT)
+        self.assertEqual(payment.amount, 47000 - 21120 - 25000)
+        self.assertAlmostEqual(built.items["bank"].balance, 10000, places=6)
+        self.assertAlmostEqual(built.items["brokerage"].balance, 65000, places=6)
         assert_conservation(built.model, monthly=True)
 
     def test_prepayment_requires_month_end_and_an_owned_home_with_a_mortgage(self):

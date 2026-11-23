@@ -26,6 +26,7 @@ limit (the child's own return is not modeled).
 """
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal, cast
@@ -1314,6 +1315,17 @@ class _SpecChecker:
             if starts <= (birth_year + minimum, birth_month):
                 self.error(f"{pension_path}.starts", f"start after the month when the claimant turns {minimum}")
 
+    @staticmethod
+    def _starts_on_leap_day(event: s.EventBase, by_id: Mapping[str, s.EventBase]) -> bool:
+        """Find February 29 through same-year, same-month relative anchors."""
+        at = event.at
+        while at.relative is not None and at.relative.years == 0 and at.month in (None, 2):
+            anchor = by_id.get(at.relative.after)
+            if anchor is None:
+                return False
+            at = anchor.at
+        return at.month == 2 and at.day == 29
+
     def check_events(self) -> None:
         from ..canada.corporation import fiscal_year_end
 
@@ -1604,12 +1616,26 @@ class _SpecChecker:
                     self.check_conversion_refs(
                         self._person_accounts(self.people[event.person]), event.source, event.target, path
                     )
-            if isinstance(event, s.RecurringExpenseEvent) and event.until is not None:
-                if event.until.day is not None:
-                    self.error(f"{path}.until.day", "'until' selects the last year of the recurring expense.")
-                last = self.resolve(event.until, event.person, by_id)
-                if year is not None and last is not None and last < year:
-                    self.error(f"{path}.until", f"'until' ({last}) is before 'at' ({year}).")
+            if isinstance(event, s.RecurringExpenseEvent):
+                last: int | None = self.end
+                if event.until is not None:
+                    if event.until.day is not None:
+                        self.error(f"{path}.until.day", "'until' selects the last year of the recurring expense.")
+                    last = self.resolve(event.until, event.person, by_id)
+                    if year is not None and last is not None and last < year:
+                        self.error(f"{path}.until", f"'until' ({last}) is before 'at' ({year}).")
+                if (
+                    year is not None
+                    and last is not None
+                    and min(last, self.end) > year
+                    and self._starts_on_leap_day(event, by_id)
+                ):
+                    self.error(
+                        f"{path}.at",
+                        f"The recurring expense cannot repeat in {year + 1}: {year + 1} has no February 29.",
+                        "Choose a day that occurs every year, or end the recurrence in the starting year.",
+                        "invalid_recurrence_day",
+                    )
             if isinstance(event, s.ClaimSocialSecurityEvent):
                 person = self.people.get(event.person)
                 if person is not None and person.social_security is None:

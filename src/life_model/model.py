@@ -183,10 +183,10 @@ EVENT_KIND_DOCS: dict[str, str] = {
     "refinanced": "A loan was refinanced (amount: the new principal; cause: the refinance).",
     "mortgage_renewed": "A mortgage's outstanding principal was repriced (amount: unchanged principal; details: date, "
     "rate_pct, rate_compounding, amortization_months, monthly_payment).",
-    "mortgage_paid_at_maturity": "A mortgage was paid off from bank cash (amount: principal plus final interest; "
-    "details: date, principal, interest_due, cash_to_keep, bridge_draw when a bridge is supplied).",
+    "mortgage_paid_at_maturity": "A mortgage was paid off (amount: principal plus final interest; "
+    "details: date, principal, interest_due, cash_floor, shortfall_debt, bridge_draw when a bridge is supplied).",
     "mortgage_prepayment": "Month-end cash was applied to mortgage principal (amount: principal paid; "
-    "details: date, cash_before, cash_to_keep, cash_fraction, requested, limit_remaining when capped).",
+    "details: date, cash_before, cash_floor, tax_holdback, cash_fraction, requested, limit_remaining when capped).",
     "private_options_exercised": "Private employee options exercised (details: date, quantity, benefit and cash).",
     "private_option_exercise_blocked": "A planned private option exercise could not proceed (date, quantity, reason).",
     "private_options_expired": "Unused private employee options expired (details: date and quantity).",

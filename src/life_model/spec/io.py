@@ -24,10 +24,10 @@ __all__ = ["dump", "dumps", "json_schema", "load", "loads", "to_data"]
 
 
 def _clean(value: Any) -> Any:
-    """Plain YAML/JSON-safe data: tuples become lists, whole floats become ints."""
+    """Write whole-dollar floats as integers in the JSON-compatible data."""
     if isinstance(value, dict):
         return {key: _clean(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list):
         return [_clean(item) for item in value]
     if isinstance(value, float) and value.is_integer() and abs(value) < 1e15:
         return int(value)
@@ -36,7 +36,7 @@ def _clean(value: Any) -> Any:
 
 def to_data(spec: HouseholdSpec) -> dict[str, Any]:
     """The spec as plain data (defaults omitted, ``spec_version`` always first)."""
-    data = spec.model_dump(mode="python", exclude_defaults=True)
+    data = spec.model_dump(mode="json", exclude_defaults=True)
     data.pop("spec_version", None)
     return {"spec_version": SPEC_VERSION, **_clean(data)}
 

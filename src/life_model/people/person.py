@@ -3,6 +3,7 @@
 # Use of this source code is governed by an MIT license:
 # https://github.com/sw23/life-model/blob/main/LICENSE
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Optional
 
@@ -10,7 +11,7 @@ from ..account.job401k import Job401kAccount
 from ..deprecated_names import deprecated_arguments
 from ..ledger import FlowKind, cash_label, debt_label
 from ..limits import federal_retirement_age
-from ..model import Event, EventKind, LifeModel, LifeModelAgent
+from ..model import Event, EventKind, LifeModel, LifeModelAgent, snap_money
 from ..services.debt_service import DebtService
 from ..services.payment_service import PaymentService
 from ..services.tax_calculation_service import TaxCalculationService
@@ -80,6 +81,7 @@ class Person(LifeModelAgent):
         residency: "Sequence[tuple[str, str]] | None" = None,
         widowed_year: int | None = None,
         estimated_payments: "EstimatedPayments | None" = None,
+        unpaid_bills_debt: float = 0.0,
     ):
         """Person
 
@@ -116,7 +118,10 @@ class Person(LifeModelAgent):
                 lives with them (IRC §2(a)).
             estimated_payments (optional): Quarterly federal estimated tax payments
                 (:class:`~life_model.tax.payments.EstimatedPayments`; keyword-only).
+            unpaid_bills_debt (float, optional): Opening balance of unpaid bills due in the first month.
         """
+        if not math.isfinite(unpaid_bills_debt) or unpaid_bills_debt < 0:
+            raise ValueError("Opening unpaid-bills debt must be finite and non-negative")
         # A state without a tax pack is refused before the person joins the model.
         for code in [state, *(entry[1] for entry in residency or ())]:
             if code is not None:
@@ -180,7 +185,10 @@ class Person(LifeModelAgent):
         self._widowed_year: int | None = None
         # A spouse who died this year: their income so far this year is on this person's joint return.
         self.deceased_spouse_this_year: Person | None = None
-        self.debt = 0
+        self.debt = unpaid_bills_debt
+        if self.debt:
+            self.model.ledger.name_label(debt_label(self), f"{self.name}'s unpaid-bills debt")
+        self._deferred_debt: tuple[int, float] | None = None
         # Per-person income ledger: separates FICA wages from ordinary taxable income so that
         # payroll tax and income tax each see the correct base (see tax/income.py).
         self.income = IncomeLedger(clock=self._income_month)
@@ -874,6 +882,16 @@ class Person(LifeModelAgent):
         self.model.ledger.name_label(label, f"{self.name}'s cash")
         return label
 
+    @property
+    def debt_due_this_month(self) -> float:
+        """Unpaid bills eligible for repayment in the current month's bills stage."""
+        deferred = self._deferred_debt
+        return (
+            max(0.0, snap_money(self.debt - deferred[1]))
+            if deferred and deferred[0] == self.model.period
+            else self.debt
+        )
+
     def add_debt(
         self,
         amount: float,
@@ -882,11 +900,15 @@ class Person(LifeModelAgent):
         kind: "FlowKind | str" = FlowKind.BORROW,
         to_account=None,
         sink: str | None = None,
+        defer_until_next_month: bool = False,
     ) -> None:
         """Carry ``amount`` of unpaid bills as debt (``self.debt``), posting it: money borrowed into
-        ``to_account`` (a transfer) or an outflow to ``sink`` financed by the debt."""
+        ``to_account`` (a transfer) or an outflow to ``sink`` financed by the debt. An event before the
+        bills stage can defer repayment of the new amount until next month."""
         if amount <= 0:
             return
+        if defer_until_next_month:
+            self._deferred_debt = (self.model.period, snap_money(self.debt - self.debt_due_this_month + amount))
         self.debt += amount
         self.model.event_log.add(
             Event(EventKind.SHORTFALL_DEBT, person=self, amount=amount, cause=cause or "unpaid bills")

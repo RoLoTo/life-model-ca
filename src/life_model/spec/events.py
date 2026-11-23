@@ -377,7 +377,7 @@ def _compile_one(builder: "_Builder", timing: EventTiming, event, year: int) -> 
 
     if action == "pay_mortgage_at_maturity":
         name = _name(event, f"{person.name} pays off the mortgage at maturity")
-        return [_life_event(year, name, event, _pay_mortgage_at_maturity, builder, person, event)]
+        return [_life_event(year, name, event, _pay_mortgage_at_maturity, builder, event)]
 
     if action == "prepay_mortgage":
         name = _name(event, f"{person.name} prepays the mortgage")
@@ -389,7 +389,7 @@ def _compile_one(builder: "_Builder", timing: EventTiming, event, year: int) -> 
 
     if action in ("draw_bridge", "repay_bridge"):
         name = _name(event, f"{person.name}: {action.replace('_', ' ')}")
-        return [_life_event(year, name, event, _bridge_transaction, builder, person, event)]
+        return [_life_event(year, name, event, _bridge_transaction, builder, event)]
 
     if action == "convert_to_roth":
         what = (
@@ -1015,6 +1015,7 @@ def _renew_mortgage(builder: "_Builder", event: s.MortgageRenewalEvent) -> None:
     if home.sold or home.mortgage is None or home.mortgage.principal <= 0:
         builder.model.event_log.add(Event(f"mortgage renewal skipped: {event.home} has no outstanding mortgage"))
         return
+    assert event.at.year is not None and event.at.month is not None
     new_terms = event.prepayment_privilege
     privilege = (
         new_terms.resolve(date(event.at.year, event.at.month, 1), home.mortgage.principal)
@@ -1029,27 +1030,23 @@ def _renew_mortgage(builder: "_Builder", event: s.MortgageRenewalEvent) -> None:
     )
 
 
-def _pay_mortgage_at_maturity(builder: "_Builder", person, event: s.MortgageMaturityEvent) -> None:
+def _pay_mortgage_at_maturity(builder: "_Builder", event: s.MortgageMaturityEvent) -> None:
     from datetime import date
 
     from ..housing.home import Home
 
     home = builder.built.items.get(event.home)
-    if not isinstance(home, Home) or home.person is not person or home.mortgage is None:
-        raise ValueError("Mortgage payoff needs an existing mortgage on the borrower's home")
+    if not isinstance(home, Home) or home.sold or home.person.is_deceased or home.mortgage is None:
+        builder.model.event_log.add(Event(f"mortgage payoff skipped: {event.home} has no active homeowner mortgage"))
+        return
     assert event.at.year is not None and event.at.month is not None and event.at.day is not None
     when = date(event.at.year, event.at.month, event.at.day)
-    bridge = _owned_bridge(builder, person, event.bridge) if event.bridge is not None else None
-    from ..housing.home import MortgagePayoffShortfall
+    bridge = _owned_bridge(builder, home.person, event.bridge) if event.bridge is not None else None
+    if builder.spec.meta.ontario_retirement_tax is not None:
+        from ..canada.funding import require_mortgage_payoff
 
-    try:
-        home.mortgage.pay_at_maturity(
-            when, interest_due=event.interest_due, cash_to_keep=event.cash_to_keep, bridge=bridge
-        )
-    except MortgagePayoffShortfall as error:
-        error.person_id = event.person
-        error.home_id = event.home
-        raise
+        require_mortgage_payoff(home.mortgage, when, event, bridge)
+    home.mortgage.pay_at_maturity(when, interest_due=event.interest_due, cash_floor=event.cash_floor, bridge=bridge)
 
 
 def _prepay_mortgage(builder: "_Builder", person, event: s.MortgagePrepaymentEvent) -> None:
@@ -1064,13 +1061,14 @@ def _prepay_mortgage(builder: "_Builder", person, event: s.MortgagePrepaymentEve
         return
     assert event.at.year is not None and event.at.month is not None and event.at.day is not None
     when = date(event.at.year, event.at.month, event.at.day)
-    floor = event.cash_to_keep
-    if event.reserve_ontario_tax:
+    tax_holdback = None
+    if builder.spec.meta.ontario_retirement_tax is not None:
         from ..tax.ontario_policy import cash_reserve_for_owner
 
-        tax_reserve = cash_reserve_for_owner(person)
-        floor = float(Decimal(str(floor)) + tax_reserve)
-    home.mortgage.prepay_surplus(when, cash_fraction=event.cash_fraction, cash_to_keep=floor)
+        tax_holdback = float(cash_reserve_for_owner(person)) if event.reserve_ontario_tax else 0.0
+    home.mortgage.prepay_surplus(
+        when, cash_fraction=event.cash_fraction, cash_floor=event.cash_floor, tax_holdback=tax_holdback
+    )
 
 
 def _heloc_draw(builder: "_Builder", event: s.HelocDrawEvent) -> None:
@@ -1086,23 +1084,25 @@ def _owned_bridge(builder: "_Builder", person, bridge_id: str):
     return line
 
 
-def _bridge_transaction(builder: "_Builder", person, event: s.DrawBridgeEvent | s.RepayBridgeEvent) -> None:
+def _bridge_transaction(builder: "_Builder", event: s.DrawBridgeEvent | s.RepayBridgeEvent) -> None:
     from datetime import date
 
-    line = _owned_bridge(builder, person, event.bridge)
+    from ..debt.bridge import DatedBridgeLine
+
+    line = builder.built.items.get(event.bridge)
+    if not isinstance(line, DatedBridgeLine) or line.home.sold or line.person.is_deceased:
+        builder.model.event_log.add(Event(f"bridge transaction skipped: {event.bridge} has no active borrower"))
+        return
     assert event.at.year is not None and event.at.month is not None and event.at.day is not None
     when = date(event.at.year, event.at.month, event.at.day)
     if isinstance(event, s.DrawBridgeEvent):
         line.draw(event.amount, when=when)
     else:
-        from ..debt.bridge import BridgeRepaymentShortfall
+        if builder.spec.meta.ontario_retirement_tax is not None:
+            from ..canada.funding import require_bridge_repayment
 
-        try:
-            line.repay(when, cash_to_keep=event.cash_to_keep)
-        except BridgeRepaymentShortfall as error:
-            error.person_id = event.person
-            error.bridge_id = event.bridge
-            raise
+            require_bridge_repayment(line, when, event)
+        line.repay(when, cash_floor=event.cash_floor)
 
 
 def _disability(person) -> None:

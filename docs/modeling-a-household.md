@@ -58,20 +58,29 @@ remaining amortization. Set `amortization_months` to change the payment count or
 
 Schedule `pay_mortgage_at_maturity` with the borrower's `person`, `home` id and an explicit
 `at: {year, month, day}`. It pays the live principal and the lender's quoted `interest_due` before the
-month's regular bills. The optional `cash_to_keep` is a minimum immediately after payoff. Funding
-comes from spendable bank cash, excluding emergency reserves. When relying on a same-day receipt,
+month's regular bills. Use the date on the mortgage contract. The engine accepts that date and
+bypasses prepayment caps and fees. The payoff follows the home's current owner and draws spendable
+bank cash above `cash_floor`, with emergency reserves excluded. Any unpaid amount is logged as
+`shortfall_debt` and comes due with the next month's bills. When relying on a same-day receipt,
 give both events IDs that sort with the receipt first (for example, `01-sale` and `02-payoff`).
-A cash shortfall stops the run before any payoff is posted.
-Set the payoff's optional `bridge` to a borrower-owned `bridge_line` id to cover that shortfall
-automatically. The draw is the smallest whole-cent amount that funds the payoff and preserves
-`cash_to_keep`. When available headroom is insufficient, the reported shortfall is the additional
-cash needed beyond that headroom. The mortgage and bridge stay as they were at the start of the event.
+Set the payoff's optional `bridge` to a borrower-owned `bridge_line` id to draw automatically.
+The draw rounds the amount needed to fund the payoff and preserve `cash_floor` up to whole cents,
+then caps it at approved headroom. The payoff records the bridge draw and carries any remaining gap
+as `shortfall_debt`, due with the next month's bills. The model treats bridge interest as
+non-deductible financing expense, including interest on an automatic draw. Qualified refinancing
+can count as acquisition debt up to the prior qualifying principal under U.S. rules.
+[IRS Publication 936](https://www.irs.gov/publications/p936)
 
 Schedule `prepay_mortgage` on the last calendar day of a month to apply spendable cash
-to principal after scheduled bills. Set `cash_to_keep` to retain a cash floor and
-`cash_fraction` to use only a portion of the surplus (for example, `0.5` for half).
-The regular payment stays the same. December tax settlement follows the prepayment stage.
-Include any cash needed for that settlement in the December floor.
+to principal after scheduled bills. Each month it uses the same tax holdback as bank-funded
+contributions, reserving cash for this year's accrued unpaid tax and any balance owed from last
+year. Set `cash_floor` to keep additional cash and `cash_fraction` to pay a share of the remaining
+surplus (for example, `0.5` for half). Scheduled payments continue at the contracted amount.
+Enter only prepayments permitted under the mortgage contract.
+
+In December, prepayment runs first, then annual taxes settle, then the taxable `savings_policy`
+sweep runs. The sweep applies its own `cash_floor`, and can leave less cash than the prepayment's
+floor. Tax-advantaged sweeps run at the start of the following year.
 
 For a contractual annual cap, set the mortgage's `prepayment_privilege` with the first eligible
 `anniversary` and `annual_limit_pct`. The cap resets on that anniversary each year. Set
@@ -87,12 +96,17 @@ clears the previous cap.
 
 Use a `bridge_line` under `debts` for approved, short-term credit secured by an existing
 home. Set the `home` id, `credit_limit`, and annual `rate_pct`. A `draw_bridge` event deposits
-its `amount` in spendable bank cash. A `repay_bridge` event pays the full principal and interest
-from that cash, with an optional `cash_to_keep` floor. Both events require an explicit calendar
-date. Interest accrues on drawn principal using actual days divided by 365. Outstanding
-interest counts toward liabilities, and the approved limit applies to principal. A sale of
+its `amount` in spendable bank cash. A `repay_bridge` event draws spendable cash above `cash_floor`
+and carries any gap as `shortfall_debt` due with the next month's bills. Both events require an
+explicit calendar date and follow the current owner of the line. Interest accrues on drawn principal
+using actual days divided by 365. Outstanding interest counts toward liabilities, and the approved
+limit applies to principal. A sale of
 the collateral clears the bridge through the sale date before depositing the net proceeds.
 For same-day events that rely on one another, give them IDs that sort in the intended order.
+
+With the Ontario return policy, mortgage maturity and bridge repayment report an infeasible
+funding plan if settled cash and any approved bridge draw cannot cover the payment and cash floor.
+Funding validation happens before the payment posts.
 
 A `savings_policy` can name one spendable opening bank account with `source_bank`. The
 `cash_floor` then applies to that account alone. If you omit `source_bank`, the floor applies

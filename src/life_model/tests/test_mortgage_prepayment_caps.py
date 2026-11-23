@@ -4,12 +4,16 @@
 # https://github.com/sw23/life-model/blob/main/LICENSE
 
 import unittest
+from datetime import date
+from decimal import Decimal
 
 from pydantic import ValidationError
 
 from ..checks import assert_conservation
+from ..housing.prepayment import MortgagePrepaymentPrivilege
 from ..model import EventKind
 from ..spec import build_household, spec_from_model, validate_spec
+from ..spec.io import Format, dumps, loads
 from .spec_helpers import fixture_config, spec_of
 from .test_mortgage_prepayment import prepayment_inputs
 
@@ -41,6 +45,17 @@ def prepay(month, day, **options):
 
 
 class TestMortgagePrepaymentCaps(unittest.TestCase):
+    def test_core_constructor_accepts_plain_numbers_as_keywords(self):
+        as_of = date(2026, 1, 1)
+        cap = MortgagePrepaymentPrivilege(
+            anniversary=date(2025, 5, 15), annual_limit_pct=10, basis_amount=100000.13, as_of=as_of, used=2500.02
+        )
+        self.assertEqual(cap.basis_amount, Decimal("100000.13"))
+        self.assertEqual(cap.annual_limit, Decimal("10000.01"))
+        self.assertEqual(cap.remaining(as_of), Decimal("7499.99"))
+        with self.assertRaises(TypeError):
+            MortgagePrepaymentPrivilege(date(2025, 5, 15), Decimal(10), Decimal(100000), as_of)
+
     def test_used_amount_survives_resume_and_resets_on_anniversary(self):
         inputs = capped_inputs()
         inputs["events"] = [prepay(1, 31), prepay(4, 30), prepay(5, 31), prepay(12, 31)]
@@ -50,17 +65,26 @@ class TestMortgagePrepaymentCaps(unittest.TestCase):
         self.assertEqual(built.items["bank"].balance, 89000)
         snapshot = spec_from_model(built.model)
         cap = snapshot.people[0].housing[0].mortgage.prepayment_privilege
-        self.assertEqual((cap.basis_amount, cap.used), (120000, 12000))
-        resumed = build_household(snapshot, config=fixture_config(), collect="month")
-        for run, expected in ((built, [10000, 0, 12000, 0]), (resumed, [0, 12000, 0])):
-            run.model.run()
-            events = run.model.event_log.of_kind(EventKind.MORTGAGE_PREPAYMENT)
-            self.assertEqual([event.amount for event in events], expected)
-            self.assertEqual([event.details["limit_remaining"] for event in events], expected)
-            self.assertEqual(run.items["home"].mortgage.principal, 86000)
-            self.assertEqual(run.items["bank"].balance, 66000)
-            self.assertEqual(run.items["reserve"].balance, 20000)
-            assert_conservation(run.model, monthly=True)
+        self.assertEqual((cap.anniversary, cap.basis_amount, cap.used), (date(2025, 5, 15), 120000, 12000))
+        runs = [("continuous", built, [10000, 0, 12000, 0])]
+        formats: tuple[Format, ...] = ("json", "yaml")
+        for fmt in formats:
+            serialized = dumps(snapshot, fmt)
+            loaded = loads(serialized, fmt)
+            self.assertEqual(dumps(loaded, fmt), serialized)
+            self.assertEqual(loaded.people[0].housing[0].mortgage.prepayment_privilege, cap)
+            resumed = build_household(loaded, config=fixture_config(), collect="month")
+            runs.append((fmt, resumed, [0, 12000, 0]))
+        for label, run, expected in runs:
+            with self.subTest(run=label):
+                run.model.run()
+                events = run.model.event_log.of_kind(EventKind.MORTGAGE_PREPAYMENT)
+                self.assertEqual([event.amount for event in events], expected)
+                self.assertEqual([event.details["limit_remaining"] for event in events], expected)
+                self.assertEqual(run.items["home"].mortgage.principal, 86000)
+                self.assertEqual(run.items["bank"].balance, 66000)
+                self.assertEqual(run.items["reserve"].balance, 20000)
+                assert_conservation(run.model, monthly=True)
 
     def test_renewal_can_keep_replace_or_remove_the_cap(self):
         replacement = {"anniversary": "2026-07-01", "annual_limit_pct": 10}
@@ -80,7 +104,7 @@ class TestMortgagePrepaymentCaps(unittest.TestCase):
                 }
                 if new_terms is not None:
                     renewal["prepayment_privilege"] = new_terms
-                inputs["events"] = [prepay(3, 31), renewal, prepay(8, 31, cash_to_keep=69000)]
+                inputs["events"] = [prepay(3, 31), renewal, prepay(8, 31, cash_floor=69000)]
                 built = build_household(spec_of(inputs), config=fixture_config(), collect="month")
                 for _ in range(7):
                     built.model.step()

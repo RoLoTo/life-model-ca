@@ -468,6 +468,7 @@ class _Builder:
             residency=[tuple(entry) for entry in p.residency] if p.residency else None,
             widowed_year=p.widowed_year,
             estimated_payments=_estimated_payments(p.estimated_payments),
+            unpaid_bills_debt=p.unpaid_bills_debt,
         )
         person.spec_id = p.id
         self.built.people[p.id] = person
@@ -1033,7 +1034,7 @@ class _Builder:
         raise NotImplementedError(f"debt kind {debt.kind!r} is not supported by the builder")
 
     def build_home(self, person, home: s.Home, *, purchase: bool | None = None, cash_only: bool = False):
-        from ..housing.home import Home, HomeExpenses, Mortgage
+        from ..housing.home import Home, HomeExpenses, Mortgage, MortgageRenewalState
 
         mortgage = None
         if home.mortgage is not None:
@@ -1041,11 +1042,13 @@ class _Builder:
             terms = self._loan_terms(m)
             privilege = m.prepayment_privilege
             as_of = date(self.model.year, self.model.month, 1)
+            renewal_state = m.renewal_state
             mortgage = Mortgage(
                 start_year=m.start_year if m.start_year is not None else self.model.year,
                 escrow_monthly=m.escrow_monthly,
                 rate_compounding=m.rate_compounding,
                 prepayment_privilege=None if privilege is None else privilege.resolve(as_of, m.original_amount),
+                renewal_state=None if renewal_state is None else MortgageRenewalState(**renewal_state.model_dump()),
                 **terms,
             )
             self._remember_loan(mortgage, m)

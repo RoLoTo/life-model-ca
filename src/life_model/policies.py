@@ -13,7 +13,7 @@ policies are these objects):
   money into an account every month. ``source="payroll"`` into a 401(k) sets the plan's deferral percent
   (``bucket`` pre-tax, Roth or after-tax); into an HSA it is a §125 payroll deferral (excluded from wages
   and FICA). Otherwise (``source="bank"``) it moves money from the owner's bank after the month's bills,
-  never more than the bank holds (in December, less the year's estimated tax), and a tax-advantaged
+  using spendable cash after the monthly tax holdback, and a tax-advantaged
   account takes at most its remaining room. ``amount_annual`` (dollars a year, or ``"max"``: the account's
   limit) is spread evenly over the plan's ``months``; ``pct_of_pay`` takes that percent of the month's
   gross W-2 pay. ``start`` / ``end`` bound the months a plan contributes in. Change it with :meth:`ContributionPlan.set_rate` / :meth:`ContributionPlan.set_amount`, or
@@ -624,13 +624,12 @@ def _gross_pay_this_month(person: "Person") -> float:
     return total
 
 
-def _available_cash(person: "Person") -> float:
-    """Cash a bank-sourced contribution may use: the owner's spendable bank balance (their own and the joint
+def available_cash_after_tax(person: "Person") -> float:
+    """Cash available for optional payments: the owner's spendable bank balance (their own and the joint
     accounts they hold with a spouse) less their share of the tax the unit still owes. That is the balance
     due on last year's return until April, plus the month's share of this year's tax not yet paid: the
     projected year's tax times the share of the year elapsed, less the withholding and estimated payments so
-    far (:meth:`TaxUnit.expected_unpaid_tax`). Holding it back month by month means a contribution is never
-    sold back to pay the same year's taxes."""
+    far (:meth:`TaxUnit.expected_unpaid_tax`)."""
     from .people.tax_unit import TaxUnit
 
     cash = person.usable_bank_balance
@@ -647,7 +646,7 @@ def _available_cash(person: "Person") -> float:
 def _contribute_from_bank(person: "Person", plan: ContributionPlan) -> float:
     model = person.model
     wanted = plan.month_amount(model.year, model.month, _gross_pay_this_month(person))
-    amount = min(wanted, _available_cash(person))
+    amount = min(wanted, available_cash_after_tax(person))
     if amount < 0.005:
         return 0.0
     moved = move_from_bank(person, plan.account, amount, cause="contribution plan")

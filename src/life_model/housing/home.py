@@ -6,12 +6,14 @@
 import html
 import math
 from calendar import monthrange
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from ..base_classes import LOAN_RENAMES, Loan
-from ..debt.terms import MortgageRateCompounding, mortgage_rate_on_monthly_basis
+from ..canada import funding
+from ..debt.terms import MortgageRateCompounding, mortgage_rate_on_monthly_basis, scheduled_balance
 from ..deprecated_names import deprecated_arguments
 from ..ledger import FlowKind
 from ..model import Event, EventKind, LifeModel, LifeModelAgent, round_money, snap_money
@@ -30,25 +32,26 @@ if TYPE_CHECKING:
     from ..debt.bridge import DatedBridgeLine
 
 
+MortgagePayoffShortfall = funding.MortgagePayoffShortfall
+
+
 def _bridge_draw_amount(gap: float) -> float:
     """Smallest whole-cent draw that covers the gap."""
     return float(Decimal(str(gap)).quantize(Decimal("0.01"), rounding=ROUND_CEILING))
 
 
-class MortgagePayoffShortfall(ValueError):
-    """Additional spendable bank cash required to discharge a mortgage on its due date."""
+@dataclass(frozen=True)
+class MortgageRenewalState:
+    """The PMI schedule and acquisition debt limits carried through a renewal."""
 
-    def __init__(
-        self, *, when: date, payoff: float, bank_cash: float, cash_to_keep: float, bridge_credit: float | None = None
-    ):
-        self.when = when
-        self.payoff = payoff
-        self.bank_cash = bank_cash
-        self.cash_to_keep = cash_to_keep
-        self.bridge_credit = bridge_credit
-        gap = snap_money(payoff + cash_to_keep - bank_cash)
-        self.amount = gap if bridge_credit is None else snap_money(_bridge_draw_amount(gap) - bridge_credit)
-        super().__init__(f"Mortgage payoff on {when.isoformat()} needs {self.amount:,.2f} in additional bank cash")
+    original_amount: float
+    rate_pct: float
+    payment_monthly: float
+    term_months: int
+    payments_made: int
+    origination: str | None
+    acquisition_cap: float | None
+    grandfathered_cap: float
 
 
 class Home(LifeModelAgent):
@@ -213,14 +216,7 @@ class Home(LifeModelAgent):
         housing = self.model.config.housing
         if self.loan_to_value <= housing.pmi_ltv_threshold:
             return False
-        if mortgage.term_months and mortgage.payments_made >= mortgage.term_months / 2:
-            return False
-        from ..debt.terms import scheduled_balance
-
-        scheduled = scheduled_balance(
-            mortgage.loan_amount, mortgage.yearly_interest_rate, mortgage.monthly_payment, mortgage.payments_made
-        )
-        return scheduled / self.original_value * 100 > housing.pmi_termination_ltv
+        return not mortgage.pmi_termination_reached(self.original_value, housing.pmi_termination_ltv)
 
     def _pmi_for_year(self) -> float:
         """Private mortgage insurance charged this year (a year's premium; a twelfth is paid monthly)."""
@@ -734,6 +730,7 @@ class Mortgage(Loan):
         schedule: str = "contract",
         rate_compounding: MortgageRateCompounding = "monthly",
         prepayment_privilege: MortgagePrepaymentPrivilege | None = None,
+        renewal_state: MortgageRenewalState | None = None,
     ):
         """Mortgage
 
@@ -764,6 +761,7 @@ class Mortgage(Loan):
             schedule (str, optional): ``"contract"`` (default) or ``"statement"`` (trust a current balance
                 above the original schedule; see :mod:`life_model.debt.terms`).
             rate_compounding: Convention used for the quoted interest rate.
+            renewal_state (MortgageRenewalState, optional): Saved PMI schedule and tax limits on a renewed loan.
         """
         loan_amount, start_date, length_years = original_amount, start_year, term_years
         self.quoted_rate_pct = rate_pct
@@ -799,10 +797,12 @@ class Mortgage(Loan):
         self._set_terms(as_of=None, **{**self._term_inputs, "origination": None})
         #: The most of the balance that is acquisition debt (None: all of it); a refinance's cash-out
         #: beyond the old balance is not, unless it paid for improvements (IRC §163(h)(3)(B)).
-        self.acquisition_cap: float | None = None
+        self.acquisition_cap = None if renewal_state is None else renewal_state.acquisition_cap
         #: The most of the balance that is grandfathered acquisition debt (incurred on or before
         #: 2017-12-15: the $1M limit); a refinance keeps it up to the refinanced balance.
-        self.grandfathered_cap = 0.0
+        self.grandfathered_cap = 0.0 if renewal_state is None else renewal_state.grandfathered_cap
+        self._renewal_baseline = renewal_state
+        self._renewal_opening_payments = self.payments_made if renewal_state is not None else 0
 
         # Interest charged this year, accumulated payment by payment from each year start (the
         # itemized mortgage-interest deduction reads it). Until the first year starts it holds the
@@ -844,22 +844,23 @@ class Mortgage(Loan):
         from ..debt.terms import parse_origination
 
         cutoff = parse_origination(self.model.config.tax.federal.mortgage_interest_grandfather_date)
-        if self.origination is not None and cutoff is not None and self.origination <= cutoff:
+        if self._renewal_baseline is not None:
+            self._renewal_opening_payments = self.payments_made
+        elif self.origination is not None and cutoff is not None and self.origination <= cutoff:
             self.grandfathered_cap = self.principal
 
     def pay_at_maturity(
-        self, when: date, *, interest_due: float, cash_to_keep: float = 0.0, bridge: "DatedBridgeLine | None" = None
+        self, when: date, *, interest_due: float, cash_floor: float = 0.0, bridge: "DatedBridgeLine | None" = None
     ) -> None:
-        """Discharge the live principal and the lender's quoted final interest from bank cash.
+        """Discharge the live principal and quoted final interest before scheduled bills.
 
-        When an approved bridge is supplied, draw only the whole cents needed to fund the payoff
-        and retain the cash floor. Raise MortgagePayoffShortfall before moving any money when
-        cash and available credit cannot cover both. Use the month's events stage before bills.
+        An approved bridge draws up to the lesser of the whole cents needed and available credit.
+        Draw spendable cash above the floor and carry any remaining gap as debt due next month.
         """
         if (when.year, when.month) != (self.model.year, self.model.month):
             raise ValueError("A mortgage payoff must execute in its scheduled month")
-        if any(not math.isfinite(amount) or amount < 0 for amount in (interest_due, cash_to_keep)):
-            raise ValueError("Final interest and cash to keep must be finite and non-negative")
+        if any(not math.isfinite(amount) or amount < 0 for amount in (interest_due, cash_floor)):
+            raise ValueError("Final interest and cash floor must be finite and non-negative")
         if self.principal <= 0:
             return
         person = self.person
@@ -867,32 +868,33 @@ class Mortgage(Loan):
             raise ValueError("The borrower must own the approved bridge line")
         principal = self.principal
         payoff = principal + interest_due
-        bank_cash = person.usable_bank_balance
-        gap = snap_money(payoff + cash_to_keep - bank_cash)
         bridge_draw = 0.0
-        if gap > 0:
-            capacity = bridge.get_available_credit() if bridge is not None else 0.0
-            required = _bridge_draw_amount(gap) if bridge is not None else gap
-            if bridge is None or required > capacity:
-                raise MortgagePayoffShortfall(
-                    when=when,
-                    payoff=payoff,
-                    bank_cash=bank_cash,
-                    cash_to_keep=cash_to_keep,
-                    bridge_credit=capacity if bridge is not None else None,
-                )
-            bridge_draw = bridge.draw(required, when=when)
+        if bridge is not None:
+            bank = person.primary_bank_account
+            bank_cash = person.usable_bank_balance
+            gap = snap_money(payoff + cash_floor - bank_cash)
+            if gap > 0 and bank is not None and not bank.reserve:
+                requested = min(_bridge_draw_amount(gap), bridge.get_available_credit())
+                if requested > 0:
+                    bridge_draw = bridge.draw(requested, when=when)
 
-        person.deduct_from_bank_accounts(
-            principal, kind=FlowKind.HOUSING, to_account=self, cause="mortgage payoff principal", include_reserve=False
-        )
-        person.deduct_from_bank_accounts(
-            interest_due,
-            kind=FlowKind.HOUSING,
-            sink="mortgage interest",
-            cause="mortgage payoff interest",
-            include_reserve=False,
-        )
+        cash_available = max(0.0, snap_money(person.usable_bank_balance - cash_floor))
+        shortfall = 0.0
+        for amount, account, sink, cause in (
+            (principal, self, None, "mortgage payoff principal"),
+            (interest_due, None, "mortgage interest", "mortgage payoff interest"),
+        ):
+            cash_requested = min(amount, cash_available)
+            undrawn = person.deduct_from_bank_accounts(
+                cash_requested, kind=FlowKind.HOUSING, to_account=account, sink=sink, cause=cause, include_reserve=False
+            )
+            cash_paid = cash_requested - undrawn
+            cash_available = max(0.0, snap_money(cash_available - cash_paid))
+            unpaid = snap_money(amount - cash_paid)
+            person.add_debt(
+                unpaid, kind=FlowKind.HOUSING, to_account=account, sink=sink, cause=cause, defer_until_next_month=True
+            )
+            shortfall += unpaid
         self._month_start_balances.append(principal)
         self.principal = 0.0
         self.payments_made += 1
@@ -910,28 +912,36 @@ class Mortgage(Loan):
             date=when.isoformat(),
             principal=principal,
             interest_due=interest_due,
-            cash_to_keep=cash_to_keep,
+            cash_floor=cash_floor,
+            shortfall_debt=snap_money(shortfall),
         )
         if bridge is not None:
             event.details["bridge_draw"] = bridge_draw
         self.model.event_log.add(event)
 
-    def prepay_surplus(self, when: date, *, cash_fraction: float = 1.0, cash_to_keep: float = 0.0) -> float:
-        """Pay a fraction of spendable bank cash above a floor to principal after the month's bills."""
+    def prepay_surplus(
+        self, when: date, *, cash_fraction: float = 1.0, cash_floor: float = 0.0, tax_holdback: float | None = None
+    ) -> float:
+        """Pay a fraction of cash above the tax holdback and cash floor after the month's bills."""
+        from ..policies import available_cash_after_tax
+
         if (when.year, when.month) != (self.model.year, self.model.month) or self.model.current_stage != "post_step":
             raise ValueError("A surplus prepayment must execute after bills in its scheduled month")
         if when.day != monthrange(when.year, when.month)[1]:
             raise ValueError("A surplus prepayment must be dated on the last day of the month")
         if not 0 <= cash_fraction <= 1:
             raise ValueError("The prepayment cash fraction must be between zero and one")
-        if not math.isfinite(cash_to_keep) or cash_to_keep < 0:
+        if not math.isfinite(cash_floor) or cash_floor < 0:
             raise ValueError("The prepayment cash floor must be finite and non-negative")
         if self.principal <= 0:
             return 0.0
 
         person = self.person
         cash_before = person.usable_bank_balance
-        surplus = max(0.0, snap_money(cash_before - cash_to_keep))
+        cash_after_tax = (
+            available_cash_after_tax(person) if tax_holdback is None else max(0.0, cash_before - tax_holdback)
+        )
+        surplus = max(0.0, snap_money(cash_after_tax - cash_floor))
         wanted = Decimal(str(surplus)) * Decimal(str(cash_fraction))
         requested = float(wanted.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
         paid = min(self.principal, requested)
@@ -958,7 +968,8 @@ class Mortgage(Loan):
             cause="month-end surplus",
             date=when.isoformat(),
             cash_before=cash_before,
-            cash_to_keep=cash_to_keep,
+            cash_floor=cash_floor,
+            tax_holdback=snap_money(cash_before - cash_after_tax),
             cash_fraction=cash_fraction,
             requested=requested,
         )
@@ -992,6 +1003,33 @@ class Mortgage(Loan):
         acquisition = average if self.acquisition_cap is None else min(average, self.acquisition_cap)
         return acquisition, min(acquisition, self.grandfathered_cap)
 
+    @property
+    def renewal_state(self) -> MortgageRenewalState | None:
+        """PMI schedule progress and acquisition limits to save alongside the servicing schedule."""
+        baseline = self._renewal_baseline
+        if baseline is None:
+            return None
+        return replace(
+            baseline,
+            payments_made=baseline.payments_made + self.payments_made - self._renewal_opening_payments,
+            acquisition_cap=self.acquisition_cap,
+            grandfathered_cap=self.grandfathered_cap,
+        )
+
+    def pmi_termination_reached(self, home_value: float, termination_ltv: float) -> bool:
+        """Whether the PMI schedule reached its midpoint or the scheduled termination balance."""
+        baseline = self._renewal_baseline
+        if baseline is None:
+            amount, rate, payment = self.loan_amount, self.yearly_interest_rate, self.monthly_payment
+            term, made = self.term_months, self.payments_made
+        else:
+            amount, rate, payment = baseline.original_amount, baseline.rate_pct, baseline.payment_monthly
+            term = baseline.term_months
+            made = baseline.payments_made + self.payments_made - self._renewal_opening_payments
+        if term and made * 2 >= term:
+            return True
+        return scheduled_balance(amount, rate, payment, made) / home_value * 100 <= termination_ltv
+
     def renew(
         self,
         *,
@@ -1021,8 +1059,20 @@ class Mortgage(Loan):
                 raise ValueError("A lump-sum privilege cannot be combined with automatic extra principal")
         rate = mortgage_rate_on_monthly_basis(rate_pct, rate_compounding)
         effective_date = date(self.model.year, self.model.month, 1)
+        origin = self.origination
+        self._renewal_baseline = self.renewal_state or MortgageRenewalState(
+            original_amount=self.loan_amount,
+            rate_pct=self.yearly_interest_rate,
+            payment_monthly=self.monthly_payment,
+            term_months=self.term_months,
+            payments_made=self.payments_made,
+            origination=None if origin is None else f"{origin[0]}-{origin[1]:02d}",
+            acquisition_cap=self.acquisition_cap,
+            grandfathered_cap=self.grandfathered_cap,
+        )
         # Payment one is in this month; snapshots use the actual count of payments made.
         self._reset_loan_schedule(self.principal, rate, remaining)
+        self._renewal_opening_payments = 0
         self.quoted_rate_pct = rate_pct
         self.rate_compounding = rate_compounding
         if prepayment_privilege is not None:
@@ -1071,6 +1121,8 @@ class Mortgage(Loan):
         self.quoted_rate_pct = rate_pct
         self.rate_compounding = "monthly"
         self.prepayment_privilege = None  # A refinance creates a new loan with a new contract.
+        self._renewal_baseline = None
+        self._renewal_opening_payments = 0
         return new_principal
 
     def _pay_cash_out(self, amount: float, cause: str) -> None:
@@ -1137,10 +1189,12 @@ def qualified_residence_interest(person: Person) -> float:
     limit, the interest is scaled by limit / balance (Pub. 936's worksheet with average balances).
     Interest on home-equity debt not used for the home is not deductible.
     """
+    from ..debt.bridge import DatedBridgeLine
+
     federal = person.model.year_config.tax.federal
     share = 0.5 if person.filing_status == FilingStatus.MARRIED_FILING_SEPARATELY else 1.0
     debts = [home.mortgage for home in person.homes if getattr(home, "mortgage", None) is not None]
-    debts += list(person.home_equity_lines)
+    debts += [line for line in person.home_equity_lines if not isinstance(line, DatedBridgeLine)]
     interest = acquisition = grandfathered = 0.0
     for debt in debts:
         debt_interest = debt.interest_paid_this_year

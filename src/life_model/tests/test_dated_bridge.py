@@ -5,9 +5,12 @@
 
 import unittest
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 
-from ..checks import assert_conservation
+from ..checks import account_residuals, assert_conservation
+from ..model import EventKind
 from ..spec import build_household, spec_from_model, validate_spec
+from ..spec.io import Format, dumps, loads
 from .spec_helpers import fixture_config, spec_of
 from .test_mortgage_maturity import maturity_inputs
 
@@ -38,7 +41,7 @@ def bridge_inputs(*, receipt_month=1, receipt_day=31, limit=60000):
             "person": "alex",
             "bridge": "line",
             "at": {"year": 2026, "month": receipt_month, "day": receipt_day},
-            "cash_to_keep": 10000,
+            "cash_floor": 10000,
         },
     ]
     return inputs
@@ -71,8 +74,13 @@ class TestDatedBridge(unittest.TestCase):
         self.assertEqual(line.get_available_credit(), 6500)
         snapshot = spec_from_model(built.model)
         self.assertEqual(snapshot.people[0].debts[0].accrued_through, date(2026, 2, 1))
-        resumed = build_household(snapshot, config=fixture_config(), collect="month")
-        for current in (built, resumed):
+        self.assertIsInstance(snapshot.people[0].debts[0].accrued_interest, float)
+        formats: tuple[Format, ...] = ("json", "yaml")
+        reloaded = [
+            build_household(loads(dumps(snapshot, fmt), fmt), config=fixture_config(), collect="month")
+            for fmt in formats
+        ]
+        for current in (built, *reloaded):
             current.model.step()
             self.assertEqual(current.items["line"].balance, 0)
             self.assertAlmostEqual(current.items["line"].interest_paid_this_year, 60.98, places=2)
@@ -99,7 +107,7 @@ class TestDatedBridge(unittest.TestCase):
         self.assertAlmostEqual(built.items["cash"].balance, 16476.21, places=2)
         assert_conservation(built.model, monthly=True)
 
-    def test_draw_above_limit_and_early_repayment_fail_without_posting(self):
+    def test_draw_above_limit_fails_without_posting(self):
         built = self.build(bridge_inputs(limit=53499.99))
         with self.assertRaisesRegex(ValueError, "approved credit"):
             built.model.step()
@@ -107,17 +115,68 @@ class TestDatedBridge(unittest.TestCase):
         self.assertEqual(built.items["cash"].balance, 32000)
         self.assertFalse(built.model.ledger.to_records())
 
+    def test_early_repayment_retires_the_bridge_and_carries_the_unfunded_balance(self):
         inputs = bridge_inputs()
         inputs["events"][-1]["at"]["day"] = 30
+        inputs["events"][-1]["cash_floor"] = 5000
         built = self.build(inputs)
-        from ..debt.bridge import BridgeRepaymentShortfall
-
-        with self.assertRaises(BridgeRepaymentShortfall) as failure:
-            built.model.step()
-        self.assertAlmostEqual(float(failure.exception.payoff), 53515.24, places=2)
-        self.assertEqual(built.items["line"].balance, 53500)
-        self.assertEqual(built.items["cash"].balance, 10000)
+        built.model.step()
+        line = built.items["line"]
+        self.assertEqual(line.balance, 0)
+        self.assertEqual(line.interest_paid_this_year, 15.24)
+        self.assertEqual(line.person.debt, 48515.24)
+        self.assertEqual(built.items["cash"].balance, 65000)
         self.assertEqual(built.items["reserve"].balance, 80000)
+        (shortfall,) = built.model.event_log.of_kind(EventKind.SHORTFALL_DEBT)
+        self.assertEqual((shortfall.amount, shortfall.cause), (48515.24, "Repay bridge on 2026-01-30"))
+        self.assertEqual(account_residuals(built.model, 2026, month=1), {})
+        snapshot = loads(dumps(spec_from_model(built.model), "json"))
+        self.assertEqual(snapshot.people[0].unpaid_bills_debt, 48515.24)
+        resumed = build_household(snapshot, config=fixture_config(), collect="month")
+        rate = fixture_config().debt.effective_unpaid_balance_interest_rate / 1200
+        for run in (built, resumed):
+            run.model.step()
+            self.assertEqual(run.items["line"].person.debt, 0)
+            self.assertAlmostEqual(run.items["cash"].balance, 65000 - 48515.24 * (1 + rate), places=6)
+            self.assertEqual(account_residuals(run.model, 2026, month=2), {})
+            assert_conservation(run.model, monthly=True)
+
+    def test_repayment_follows_the_line_to_the_surviving_spouse(self):
+        inputs = bridge_inputs()
+        inputs["meta"]["end_year"] = 2027
+        inputs["people"].append(
+            {
+                "id": "bo",
+                "name": "Bo",
+                "age": 41,
+                "birth": "1985-01",
+                "retirement_age": 65,
+                "accounts": [{"kind": "bank", "balance": 0, "interest_pct": 0}],
+                "spending": {"amount_annual": 0, "growth_pct": 2},
+            }
+        )
+        inputs["relationships"] = {"marriages": [{"spouses": ["alex", "bo"]}]}
+        inputs["events"] = [event for event in inputs["events"] if event["action"] in ("draw_bridge", "repay_bridge")]
+        inputs["events"][-1]["at"] = {"year": 2027, "month": 6, "day": 5}
+        inputs["events"].append({"action": "die", "person": "alex", "at": 2027})
+        built = self.build(inputs)
+        built.model.step_year()
+        built.model.step()
+        snapshot = spec_from_model(built.model)
+        self.assertEqual([event.person for event in snapshot.events], ["bo"])
+        resumed = build_household(loads(dumps(snapshot, "json")), config=fixture_config(), collect="month")
+        days = (date(2027, 6, 5) - date(2026, 1, 28)).days
+        interest = Decimal(53500) * Decimal("0.052") * days / 365
+        expected = float(interest.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        for run in (built, resumed):
+            for _ in range(5):
+                run.model.step()
+            line = run.items["line"]
+            self.assertEqual(line.person.name, "Bo")
+            self.assertEqual(line.balance, 0)
+            self.assertEqual(line.interest_paid_this_year, expected)
+            self.assertFalse(run.model.event_log.of_kind(EventKind.SHORTFALL_DEBT))
+            assert_conservation(run.model, monthly=True)
 
     def test_collateral_sale_retires_the_line_at_the_sale_date(self):
         inputs = bridge_inputs()

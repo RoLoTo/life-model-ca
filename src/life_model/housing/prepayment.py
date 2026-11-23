@@ -14,17 +14,33 @@ _CENT = Decimal("0.01")
 _ZERO = Decimal(0)
 
 
-@dataclass
+@dataclass(init=False)
 class MortgagePrepaymentPrivilege:
-    """A fixed contract basis and the amount used in the period containing `as_of`."""
+    """A fixed contract basis and the amount used in the period containing `as_of`.
+
+    Accepts integers, floats, and decimals as numeric inputs and computes the cap with decimals.
+    """
 
     anniversary: date
     annual_limit_pct: Decimal
     basis_amount: Decimal
     as_of: date
-    used: Decimal = _ZERO
+    used: Decimal
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        anniversary: date,
+        annual_limit_pct: float | Decimal,
+        basis_amount: float | Decimal,
+        as_of: date,
+        used: float | Decimal = _ZERO,
+    ) -> None:
+        self.anniversary = anniversary
+        self.annual_limit_pct = Decimal(str(annual_limit_pct))
+        self.basis_amount = Decimal(str(basis_amount))
+        self.as_of = as_of
+        self.used = Decimal(str(used))
         if not self.annual_limit_pct.is_finite() or not 0 <= self.annual_limit_pct <= 100:
             raise ValueError("The annual lump-sum percentage must be between zero and 100")
         if not self.basis_amount.is_finite() or self.basis_amount <= 0:

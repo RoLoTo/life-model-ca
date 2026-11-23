@@ -10,6 +10,7 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from math import isfinite
 from typing import TYPE_CHECKING
 
+from ..canada import funding
 from ..ledger import FlowKind
 from ..model import snap_money
 from .heloc import HomeEquityLine
@@ -18,22 +19,15 @@ if TYPE_CHECKING:
     from ..housing.home import Home
     from ..people.person import Person
 
+BridgeRepaymentShortfall = funding.BridgeRepaymentShortfall
+
+
 _CENT = Decimal("0.01")
 _ZERO = Decimal(0)
 
 
 def _cents(amount: Decimal) -> Decimal:
     return amount.quantize(_CENT, rounding=ROUND_HALF_UP)
-
-
-class BridgeRepaymentShortfall(ValueError):
-    """Amount of spendable bank cash still needed for a dated repayment."""
-
-    def __init__(self, *, when: date, payoff: Decimal, cash_to_keep: Decimal, bank_cash: Decimal):
-        self.when = when
-        self.payoff = payoff
-        self.amount = payoff + cash_to_keep - bank_cash
-        super().__init__(f"Bridge repayment on {when.isoformat()} needs {self.amount:,.2f} in additional bank cash")
 
 
 class DatedBridgeLine(HomeEquityLine):
@@ -52,7 +46,7 @@ class DatedBridgeLine(HomeEquityLine):
         rate_pct: float,
         name: str | None = None,
         drawn_principal: float = 0.0,
-        accrued_interest: Decimal = _ZERO,
+        accrued_interest: float | Decimal = _ZERO,
         accrued_through: date | None = None,
     ):
         if home.person is not owner or home.sold:
@@ -60,6 +54,7 @@ class DatedBridgeLine(HomeEquityLine):
         if not isfinite(rate_pct) or rate_pct < 0:
             raise ValueError("A bridge rate must be finite and non-negative")
         limit, principal = Decimal(str(credit_limit)), Decimal(str(drawn_principal))
+        interest = Decimal(str(accrued_interest))
         if (
             not limit.is_finite()
             or not principal.is_finite()
@@ -68,7 +63,7 @@ class DatedBridgeLine(HomeEquityLine):
             or principal != _cents(principal)
         ):
             raise ValueError("Opening principal and approved credit must be non-negative cents, within the limit")
-        if not accrued_interest.is_finite() or accrued_interest < 0 or (accrued_interest and not principal):
+        if not interest.is_finite() or interest < 0 or (interest and not principal):
             raise ValueError("Opening bridge interest must be non-negative and requires drawn principal")
         if (principal > 0) != (accrued_through is not None):
             raise ValueError("Supply an accrued-through date exactly when there is opening principal")
@@ -79,11 +74,11 @@ class DatedBridgeLine(HomeEquityLine):
             home=home,
             credit_limit=credit_limit,
             rate_pct=rate_pct,
-            balance=float(principal + _cents(accrued_interest)),
+            balance=float(principal + _cents(interest)),
             name=name or f"Bridge on {home.name}",
         )
         self.drawn_principal = principal
-        self.accrued_interest = accrued_interest
+        self.accrued_interest = interest
         self.accrued_through = accrued_through
 
     def get_available_credit(self) -> float:
@@ -155,24 +150,28 @@ class DatedBridgeLine(HomeEquityLine):
             boundary = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
             self._accrue(boundary)
 
-    def repay(self, when: date, *, cash_to_keep: float = 0.0) -> None:
+    def repay(self, when: date, *, cash_floor: float = 0.0) -> None:
+        """Repay from spendable cash above the floor and carry any gap as debt due next month."""
         self._check_month(when)
-        floor = Decimal(str(cash_to_keep))
+        floor = Decimal(str(cash_floor))
         if not floor.is_finite() or floor < 0 or floor != _cents(floor):
             raise ValueError("The cash floor must be a non-negative amount in whole cents")
         if not self.drawn_principal:
             return
-        payoff = self.drawn_principal + _cents(self._interest_at(when))
-        cash = Decimal(str(snap_money(self.person.usable_bank_balance))).quantize(_CENT, rounding=ROUND_DOWN)
-        if cash < payoff + floor:
-            raise BridgeRepaymentShortfall(when=when, payoff=payoff, cash_to_keep=floor, bank_cash=cash)
         self._accrue(when)
-        self.person.deduct_from_bank_accounts(
-            float(payoff),
+        payoff = self.drawn_principal + _cents(self.accrued_interest)
+        cash = Decimal(str(snap_money(self.person.usable_bank_balance))).quantize(_CENT, rounding=ROUND_DOWN)
+        cash_payment = min(payoff, max(_ZERO, cash - floor))
+        cause = f"Repay bridge on {when.isoformat()}"
+        undrawn = self.person.deduct_from_bank_accounts(
+            float(cash_payment), kind=FlowKind.DEBT_SERVICE, to_account=self, include_reserve=False, cause=cause
+        )
+        self.person.add_debt(
+            snap_money(float(payoff - cash_payment) + undrawn),
             kind=FlowKind.DEBT_SERVICE,
             to_account=self,
-            include_reserve=False,
-            cause=f"Repay bridge on {when.isoformat()}",
+            cause=cause,
+            defer_until_next_month=True,
         )
         self._clear()
 

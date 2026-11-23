@@ -4,13 +4,16 @@
 # https://github.com/sw23/life-model/blob/main/LICENSE
 
 import unittest
+from decimal import ROUND_HALF_UP, Decimal
 
-from ..checks import assert_conservation
-from ..housing.home import MortgagePayoffShortfall
+from ..checks import account_residuals, assert_conservation
+from ..housing.home import qualified_residence_interest
 from ..model import EventKind
 from ..spec import build_household, spec_from_model, validate_spec
+from ..spec.io import dumps, loads
 from .spec_helpers import fixture_config, spec_of
 from .test_dated_bridge import bridge_inputs
+from .test_mortgage_maturity import inherited_mortgage_inputs
 
 
 def automatic_inputs(*, receipt_month=1, receipt_day=31, limit=60000):
@@ -43,6 +46,7 @@ class TestBridgeFundedPayoff(unittest.TestCase):
             self.assertAlmostEqual(run.items["line"].interest_paid_this_year, 60.98, places=2)
             self.assertAlmostEqual(run.items["cash"].balance, 16439.02, places=2)
             assert_conservation(run.model, monthly=True)
+        self.assertEqual(qualified_residence_interest(built.items["line"].person), 500)
 
     def test_earlier_receipt_avoids_the_draw(self):
         built = self.build(automatic_inputs(receipt_day=27))
@@ -56,19 +60,68 @@ class TestBridgeFundedPayoff(unittest.TestCase):
         self.assertEqual(payoff.details["bridge_draw"], 0)
         assert_conservation(built.model, monthly=True)
 
-    def test_insufficient_headroom_stops_before_any_debt_or_cash_moves(self):
-        inputs = automatic_inputs(limit=60000)
+    def test_insufficient_headroom_draws_available_credit_and_carries_the_gap(self):
+        inputs = automatic_inputs(receipt_month=2, receipt_day=5, limit=60000)
         # Approved principal limit is $60,000, but $7,000 is already drawn.
-        inputs["people"][0]["debts"][0].update(drawn_principal=7000, accrued_through="2026-01-01")
+        person = inputs["people"][0]
+        person["debts"][0].update(drawn_principal=7000, accrued_through="2026-01-01")
+        person["housing"][1]["purchase_price"] = 65000
         built = self.build(inputs)
-        with self.assertRaises(MortgagePayoffShortfall) as raised:
+        built.model.step()
+        line = built.items["line"]
+        self.assertEqual(built.items["cash"].balance, 10000)
+        self.assertEqual(built.items["reserve"].balance, 80000)
+        self.assertEqual(built.items["home"].mortgage.principal, 0)
+        self.assertEqual((line.drawn_principal, line.balance, line.person.debt), (60000, 60061.12, 500))
+        (payoff,) = built.model.event_log.of_kind(EventKind.MORTGAGE_PAID_AT_MATURITY)
+        self.assertEqual((payoff.details["bridge_draw"], payoff.details["shortfall_debt"]), (53000, 500))
+        (shortfall,) = built.model.event_log.of_kind(EventKind.SHORTFALL_DEBT)
+        self.assertEqual(shortfall.amount, 500)
+        self.assertEqual(account_residuals(built.model, 2026, month=1), {})
+
+        snapshot = loads(dumps(spec_from_model(built.model), "json"))
+        resumed = build_household(snapshot, config=fixture_config(), collect="month")
+        interest = ((7000 * 27 + 60000 * 8) * Decimal("0.052") / 365).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        rate = fixture_config().debt.effective_unpaid_balance_interest_rate / 1200
+        for run in (built, resumed):
+            run.model.step()
+            self.assertEqual(run.items["line"].balance, 0)
+            self.assertEqual(run.items["line"].person.debt, 0)
+            self.assertAlmostEqual(run.items["cash"].balance, 75000 - 60000 - float(interest) - 500 * (1 + rate))
+            self.assertEqual(account_residuals(run.model, 2026, month=2), {})
+            assert_conservation(run.model, monthly=True)
+
+    def test_inherited_home_and_line_can_fund_the_payoff(self):
+        inputs = inherited_mortgage_inputs()
+        inputs["people"][0]["debts"] = [
+            {"kind": "bridge_line", "id": "line", "home": "home", "credit_limit": 120000, "rate_pct": 5.2}
+        ]
+        inputs["events"].pop(0)
+        inputs["events"][0].update(bridge="line", at={"year": 2027, "month": 6, "day": 5})
+        built = self.build(inputs)
+        built.model.step_year()
+        for _ in range(6):
             built.model.step()
-        self.assertEqual((raised.exception.amount, raised.exception.bridge_credit), (500, 53000))
+        self.assertEqual(built.items["home"].mortgage.principal, 0)
+        self.assertEqual(built.items["line"].person.name, "Bo")
+        (payoff,) = built.model.event_log.of_kind(EventKind.MORTGAGE_PAID_AT_MATURITY)
+        self.assertEqual(payoff.person_name, "Bo")
+        self.assertGreater(payoff.details["bridge_draw"], 0)
+        self.assertFalse(built.model.event_log.of_kind(EventKind.SHORTFALL_DEBT))
+        assert_conservation(built.model, monthly=True)
+
+    def test_payoff_can_carry_debt_when_the_only_bank_is_a_reserve(self):
+        inputs = automatic_inputs(limit=120000)
+        inputs["events"] = [inputs["events"][1]]
+        built = self.build(inputs)
+        built.items["cash"].reserve = True
+        built.model.step()
+        mortgage = built.items["home"].mortgage
+        self.assertEqual((mortgage.principal, mortgage.person.debt), (0, 75500))
+        self.assertEqual(built.items["line"].balance, 0)
         self.assertEqual(built.items["cash"].balance, 32000)
         self.assertEqual(built.items["reserve"].balance, 80000)
-        self.assertEqual(built.items["home"].mortgage.principal, 75000)
-        self.assertEqual(built.items["line"].balance, 7000)
-        self.assertFalse(built.model.ledger.to_records())
+        assert_conservation(built.model, monthly=True)
 
     def test_fractional_cent_gap_draws_the_smallest_whole_cent(self):
         inputs = automatic_inputs()
@@ -87,10 +140,12 @@ class TestBridgeFundedPayoff(unittest.TestCase):
                     self.assertAlmostEqual(built.items["cash"].balance, 10000.006, places=8)
                     assert_conservation(built.model, monthly=True)
                 else:
-                    with self.assertRaises(MortgagePayoffShortfall) as raised:
-                        built.model.step()
-                    self.assertEqual(raised.exception.amount, 0.01)
-                    self.assertFalse(built.model.ledger.to_records())
+                    built.model.step()
+                    self.assertEqual(built.items["home"].mortgage.principal, 0)
+                    self.assertAlmostEqual(built.items["home"].mortgage.person.debt, 0.004, places=8)
+                    self.assertEqual(built.items["cash"].balance, 10000)
+                    self.assertFalse([entry for entry in built.model.ledger.to_records() if entry["kind"] == "borrow"])
+                    assert_conservation(built.model, monthly=True)
 
     def test_payoff_rejects_a_missing_or_unowned_bridge(self):
         missing = automatic_inputs()
