@@ -45,6 +45,7 @@ class SpendingTrial:
     annual_spending: Decimal
     gap: SpendingGap | None
     ending_bank_cash: Decimal | None = None
+    ending_tax_free: Decimal | None = None
     reserve_for_unpaid_tax: Decimal | None = None
     cash_after_tax_reserve: Decimal | None = None
     ending_mortgage_principal: Decimal | None = None
@@ -112,15 +113,19 @@ def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed) 
 
     end = date(model.end_year, 12, 31)
     bank = money(D(str(owner.usable_bank_balance)))
+    # A TFSA withdrawal has no tax effect, so it can fund the reserve as it funds bills.
+    tax_free = money(D(str(sum(account.balance for account in owner.tfsas))))
     returns = model.income_tax_policy.tax_settlements()
     unpaid_tax = sum((max(D(0), tax.balance - tax.amount_settled) for tax in returns), D(0))
-    available = bank - unpaid_tax
+    available = bank + tax_free - unpaid_tax
     gap = None
     if available < cash_reserve:
         gap = SpendingGap("ending_cash_reserve", end.isoformat(), cash_reserve - available)
     mortgage = sum(home.mortgage.principal for home in owner.homes if home.mortgage is not None and not home.sold)
     net_worth = household_balance_sheet(model).net_worth
-    return SpendingTrial(spending, gap, bank, unpaid_tax, available, money(D(str(mortgage))), money(D(str(net_worth))))
+    return SpendingTrial(
+        spending, gap, bank, tax_free, unpaid_tax, available, money(D(str(mortgage))), money(D(str(net_worth)))
+    )
 
 
 def _settings(spec, person, from_year, index_pct, cash_reserve):

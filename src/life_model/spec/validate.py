@@ -1684,7 +1684,7 @@ class _SpecChecker:
             if (
                 target is not None
                 and isinstance(target[2], s.TFSA)
-                and (event.withholding or event.year_to_date_target)
+                and (event.withholding or event.year_to_date_target or event.taxable_income_target is not None)
             ):
                 self.error(path, "TFSA withdrawals have no withholding or taxable annual target")
         for field, ident, kind in references:

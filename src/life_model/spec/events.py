@@ -39,7 +39,7 @@ The primary compiled ``LifeEvent`` carries ``spec_source`` for
 """
 
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, Any, cast
 
 from ..lifeevents import LifeEvent
@@ -673,6 +673,11 @@ def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEven
             amount = event.amount
             if event.year_to_date_target:
                 amount -= corp.calendar_dividends_paid.get(on.year, 0)
+            if event.taxable_income_target is not None:
+                policy = person.model.income_tax_policy
+                room = max(Decimal(0), event.taxable_income_target - policy.taxable_income_to_date())
+                dividend = room / policy.taxable_dividend_multiple(on.year)
+                amount = min(amount, dividend.quantize(Decimal(".01"), rounding=ROUND_DOWN))
             if amount <= 0:
                 return
             corp.pay_dividend(
@@ -934,6 +939,7 @@ def _registered_cash_event(builder: "_Builder", person, event: s.RegisteredCashE
             withholding=event.withholding,
             year_to_date_target=event.year_to_date_target,
             cap_to_balance=event.cap_to_balance,
+            taxable_income_target=event.taxable_income_target,
         )
 
 

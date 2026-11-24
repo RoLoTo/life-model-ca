@@ -3629,6 +3629,13 @@ class CorporatePayDividendEvent(CorporateEvent):
     year_to_date_target: bool = spec_field(
         False, description="Pay only the amount still needed to reach the calendar-year dividend target."
     )
+    taxable_income_target: CashAmount | None = spec_field(
+        None,
+        description="Limit the dividend to the grossed-up amount that raises the shareholder's taxable income "
+        "for the calendar year to this level, using income recorded to the payment date.",
+        ge=0,
+        unit="CAD",
+    )
 
 
 class CorporateIncomeTaxEvent(CorporateEvent):
@@ -3918,6 +3925,13 @@ class WithdrawRegisteredEvent(RegisteredCashEvent):
     year_to_date_target: bool = spec_field(
         False,
         description="Withdraw only the amount still required to reach this calendar year's target from this account.",
+    )
+    taxable_income_target: CashAmount | None = spec_field(
+        None,
+        description="Limit an RRSP or RRIF withdrawal to the amount that raises the owner's taxable income for the "
+        "calendar year to this level, using income recorded to the withdrawal date.",
+        ge=0,
+        unit="CAD",
     )
 
 

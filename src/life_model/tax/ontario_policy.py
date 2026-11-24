@@ -386,6 +386,16 @@ class OntarioRetirementPolicy:
             facts["rrsp_deduction"] = self.rrsp_deductions[year]
         return facts
 
+    def taxable_income_to_date(self) -> Decimal:
+        """Taxable income on the owner's current-year return from the income recorded so far."""
+        from ..people.tax_unit import TaxUnit
+
+        return self.calculate(TaxUnit.for_member(self.owner)).taxable_income
+
+    def taxable_dividend_multiple(self, year: int) -> Decimal:
+        """Grossed-up taxable amount per dollar of non-eligible dividend paid in the year."""
+        return ontario_rates(self.rate_year(year)).noneligible_dividend_grossup
+
     def calculate(self, unit, additional_income=0, additional_preferential=0, additional_short_term=0) -> OntarioTax:
         inputs = self._tax_inputs(unit, additional_income, additional_preferential, additional_short_term)
         return inputs.calculate(self.rrsp_deductions.get(self.owner.model.year, D(0)))

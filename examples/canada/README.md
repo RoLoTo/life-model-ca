@@ -60,6 +60,19 @@ appropriate corporate fiscal year for the refundable tax calculation.
 Financial year-end refunds include dividends funded when that month's bills
 are settled. Cash from a refund becomes available on its settlement date.
 
+## Filling taxable income to a target
+
+Set `taxable_income_target` on a `corporate_pay_dividend`, or on an RRSP
+or RRIF `withdraw_registered`, to limit the payment to the amount that
+raises the owner's taxable income for the calendar year to that level.
+The calculation uses income recorded up to the payment date, and a
+dividend uses its grossed-up taxable amount. The event's `amount` remains
+the maximum payment. Schedule the event late in the year so most of the
+year's income is already recorded.
+
+The retirement spending search treats TFSA balances as available for the
+final unpaid tax reserve, in the same way they fund bills.
+
 ## Mortgage payoff at maturity
 
 Add `pay_mortgage_at_maturity` with the home id, a full calendar date,

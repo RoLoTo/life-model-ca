@@ -93,6 +93,7 @@ def withdraw_registered(
     withholding: Decimal | None,
     year_to_date_target: bool,
     cap_to_balance: bool = False,
+    taxable_income_target: Decimal | None = None,
 ) -> None:
     """Fund a dated cash withdrawal from one registered account."""
 
@@ -100,7 +101,7 @@ def withdraw_registered(
     if bank.owner is not owner or bank not in owner.usable_bank_accounts or bank.reserve:
         raise ValueError("A registered withdrawal needs the owner's available bank account")
     deferred = isinstance(account, CanadianRetirementAccount)
-    if not deferred and (withholding or year_to_date_target):
+    if not deferred and (withholding or year_to_date_target or taxable_income_target is not None):
         raise ValueError("TFSA withdrawals have no withholding or taxable annual target")
     if amount <= 0:
         raise ValueError("A registered withdrawal needs a positive amount")
@@ -108,10 +109,13 @@ def withdraw_registered(
         amount = max(D(0), amount - account.withdrawals_this_year)
     if cap_to_balance:
         amount = min(amount, _whole_cent_balance(account))
-    _check_registered_cash(account, on, amount)
     policy = getattr(account.model, "income_tax_policy", None)
     if deferred and getattr(policy, "owner", None) is not owner:
         raise ValueError("A withdrawal from a Canadian deferred account needs the Ontario return policy")
+    if taxable_income_target is not None:
+        room = max(D(0), D(str(taxable_income_target)) - policy.taxable_income_to_date())
+        amount = min(amount, room.quantize(D(".01"), rounding=ROUND_DOWN))
+    _check_registered_cash(account, on, amount)
     if withholding is None:
         withholding = (
             lump_sum_withholding(amount, account.remaining_minimum(on.year))

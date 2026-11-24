@@ -1657,6 +1657,7 @@ Make a scheduled RRSP, RRIF or TFSA withdrawal.
 | `withholding` | Decimal (optional) | CAD | — |  | Override tax withheld on this payment. Explicit zero means no withholding. |
 | `cap_to_balance` | boolean |  | `False` |  | Allow a scheduled target to exhaust the account and pay only the available gross amount. |
 | `year_to_date_target` | boolean |  | `False` |  | Withdraw only the amount still required to reach this calendar year's target from this account. |
+| `taxable_income_target` | Decimal (optional) | CAD | — |  | Limit an RRSP or RRIF withdrawal to the amount that raises the owner's taxable income for the calendar year to this level, using income recorded to the withdrawal date. |
 
 ## RRSPToRRIFEvent
 
@@ -1795,6 +1796,7 @@ Pay a non-eligible Canadian dividend to the corporation's resident shareholder.
 | `up_to_available` | boolean |  | `False` |  | Cap the target at liquid corporate assets after known payables and tax on interest to date. |
 | `redeem_investments` | boolean |  | `False` |  | Allow redemption of corporate interest-bearing deposits. |
 | `year_to_date_target` | boolean |  | `False` |  | Pay only the amount still needed to reach the calendar-year dividend target. |
+| `taxable_income_target` | Decimal (optional) | CAD | — |  | Limit the dividend to the grossed-up amount that raises the shareholder's taxable income for the calendar year to this level, using income recorded to the payment date. |
 
 ## CorporateIncomeTaxEvent
 
