@@ -72,12 +72,14 @@ year's income is already recorded.
 
 ## Retirement spending search
 
-The spending search funds the horizon's unpaid personal tax and any ending
-cash reserve through the household's `withdrawal_order` on December 31 of
-the final year, before that year's return is settled. Each source is drawn
+The spending search funds the horizon's unpaid personal tax, every personal
+debt on the balance sheet, and any ending cash reserve through the household's
+`withdrawal_order` on December 31 of the final year, before that year's return
+is settled. Each source is drawn
 in turn, and taxable draws are taxed on the final return. A budget is feasible
 when that payment is covered, so the largest budget leaves each waterfall
-source close to empty. `ending_sources` reports what each source still holds.
+source close to empty. `ending_sources` reports what each source still holds,
+and `ending_liabilities` the debts the ending cash covers.
 Assets outside the waterfall, such as homes, are not spent.
 
 ## Mortgage payoff at maturity

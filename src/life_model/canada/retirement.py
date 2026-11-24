@@ -54,6 +54,8 @@ class SpendingTrial:
     gap: SpendingGap | None
     ending_bank_cash: Decimal | None = None
     reserve_for_unpaid_tax: Decimal | None = None
+    #: Personal debts still owed at the horizon, which the ending cash must also cover.
+    ending_liabilities: Decimal | None = None
     cash_after_tax_reserve: Decimal | None = None
     ending_mortgage_principal: Decimal | None = None
     ending_consolidated_net_worth: Decimal | None = None
@@ -97,13 +99,28 @@ def _dated_gap(error: ValueError, model) -> SpendingGap:
     return SpendingGap(type(error).__name__, when.isoformat() if when else month, money(D(str(error.amount))))
 
 
-def _final_reserve_need(owner, cash_reserve: Decimal) -> Decimal:
-    """Cash still needed for outstanding and projected personal tax plus the ending reserve."""
-    return cash_reserve_for_owner(owner) + cash_reserve + _FINAL_RESERVE_MARGIN - D(str(owner.usable_bank_balance))
+def personal_liabilities(model, owner) -> Decimal:
+    """Every debt on the owner's balance sheet, such as loans, credit lines and unpaid bills.
+
+    Personal income tax is reserved separately and is excluded here.
+    """
+    sheet = household_balance_sheet(model)
+    owed = -sum(
+        value
+        for label, value in sheet.lines.items()
+        if value < 0 and sheet.owners.get(label) == owner.unique_id and not label.startswith("TaxDue:")
+    )
+    return money(D(str(owed)))
+
+
+def _final_reserve_need(model, owner, cash_reserve: Decimal) -> Decimal:
+    """Cash still needed for personal tax, debts still owed and the ending reserve."""
+    owed = cash_reserve_for_owner(owner) + personal_liabilities(model, owner)
+    return owed + cash_reserve + _FINAL_RESERVE_MARGIN - D(str(owner.usable_bank_balance))
 
 
 def fund_final_reserve(model, *, person: str, cash_reserve: Decimal = _ZERO) -> None:
-    """Schedule a final-December draw through the household waterfall for the horizon's tax and reserve.
+    """Schedule a final-December draw through the household waterfall for the horizon's tax, debts and reserve.
 
     Every non-bank source in ``withdrawal_order`` is drawn in turn, after the month's bills and before
     the year's tax settlement. Taxable draws are added to the final return, and each source is drawn
@@ -117,7 +134,7 @@ def fund_final_reserve(model, *, person: str, cash_reserve: Decimal = _ZERO) -> 
         with model.ledger.caused_by("fund the final tax reserve"):
             for source in unit.withdrawal_order[1:]:
                 for round_number in range(_FINAL_RESERVE_ROUNDS):
-                    need = _final_reserve_need(owner, cash_reserve)
+                    need = _final_reserve_need(model, owner, cash_reserve)
                     if need < _CENT:
                         break
                     # Each round is a separate payment, so a repeated corporate dividend has its own reference.
@@ -179,7 +196,8 @@ def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed) 
     bank = money(D(str(owner.usable_bank_balance)))
     returns = model.income_tax_policy.tax_settlements()
     unpaid_tax = sum((max(D(0), tax.balance - tax.amount_settled) for tax in returns), D(0))
-    available = bank - unpaid_tax
+    liabilities = personal_liabilities(model, owner)
+    available = bank - unpaid_tax - liabilities
     gap = None
     if available < cash_reserve:
         gap = SpendingGap("ending_cash_reserve", end.isoformat(), cash_reserve - available)
@@ -190,6 +208,7 @@ def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed) 
         gap,
         bank,
         unpaid_tax,
+        liabilities,
         available,
         money(D(str(mortgage))),
         money(D(str(net_worth))),

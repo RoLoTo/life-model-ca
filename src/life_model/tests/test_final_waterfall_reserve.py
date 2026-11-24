@@ -93,3 +93,28 @@ def test_final_drawdown_is_taxed_on_the_final_return():
     assert trial.ending_bank_cash == trial.reserve_for_unpaid_tax + 1
     assert abs(drawn - (trial.reserve_for_unpaid_tax + 1 - 1000)) < D("0.02")
     assert trial.reserve_for_unpaid_tax > D(30000 - 16879) * D(".14")
+
+
+def test_debts_owed_at_the_horizon_are_funded_through_the_waterfall():
+    base = search_spending(household(), person="owner", from_year=2027, upper_bound=100000)
+    spec = household()
+    spec["people"][0]["debts"] = [
+        {
+            "kind": "credit_card",
+            "id": "card",
+            "credit_limit": 10000,
+            "balance": 6000,
+            "rate_pct": 0,
+            "payment_strategy": "fixed",
+            "payment_monthly": 100,
+        }
+    ]
+    indebted = search_spending(spec, person="owner", from_year=2027, upper_bound=100000)
+    trial = indebted.feasible
+    # Twenty-four monthly payments leave CAD 3,600 owed at the horizon.
+    assert trial.ending_liabilities == D(3600)
+    assert (
+        trial.ending_bank_cash - trial.reserve_for_unpaid_tax - trial.ending_liabilities == trial.cash_after_tax_reserve
+    )
+    assert trial.cash_after_tax_reserve < EXHAUSTED
+    assert indebted.feasible.annual_spending < base.feasible.annual_spending - 1000
