@@ -508,6 +508,7 @@ class OntarioRetirementPolicy:
                 kind=FlowKind.TAX,
                 to_account=tax_due_label(owner),
                 cause=f"{year} Canadian income tax payment",
+                dividend_on=result.settlement,
             )
             paid = outstanding - money(D(str(remaining)))
             owner.taxes_owed -= float(paid)

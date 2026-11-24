@@ -1285,6 +1285,7 @@ class _Builder:
             spec.cash,
             shareholder=self.person(spec.shareholder),
             fiscal_year_end_month=spec.fiscal_year_end_month,
+            shortfall_dividends_from=spec.shortfall_dividends_from,
         )
         corp.spec_id = spec.id
         corp.payables = {
@@ -1305,6 +1306,8 @@ class _Builder:
         corp.nerdtoh = spec.nerdtoh
         if spec.dividends_paid_ytd:
             corp.dividends_paid[fiscal_year] = spec.dividends_paid_ytd
+        if spec.calendar_dividends_paid_ytd:
+            corp.calendar_dividends_paid[self.model.start_year] = spec.calendar_dividends_paid_ytd
         corp.dividend_refunds = {
             year: DividendRefund(facts.amount, facts.due) for year, facts in spec.dividend_refunds.items()
         }

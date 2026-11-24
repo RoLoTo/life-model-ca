@@ -3252,6 +3252,9 @@ class CorporationSpec(SpecModel):
         ge=1,
         le=12,
     )
+    shortfall_dividends_from: date | None = spec_field(
+        None, description="First date when the corporate_dividend withdrawal step can use this corporation."
+    )
     investments: CorporateInterestAccountSpec | None = spec_field(
         None, description="Corporate interest-bearing balance and its scenario yield."
     )
@@ -3263,6 +3266,9 @@ class CorporationSpec(SpecModel):
     )
     dividends_paid_ytd: CashAmount = spec_field(
         Decimal(0), description="Qualifying non-eligible dividends already paid in the opening fiscal year.", unit="CAD"
+    )
+    calendar_dividends_paid_ytd: CashAmount = spec_field(
+        Decimal(0), description="Dividends paid in the opening calendar year before the run.", unit="CAD"
     )
     dividend_refunds: dict[Year, CorporateDividendRefundSpec] = spec_field(
         default_factory=dict, description="Outstanding corporate dividend refunds keyed by fiscal closing year."
@@ -3620,6 +3626,9 @@ class CorporatePayDividendEvent(CorporateEvent):
         False, description="Cap the target at liquid corporate assets after known payables and tax on interest to date."
     )
     redeem_investments: bool = spec_field(False, description="Allow redemption of corporate interest-bearing deposits.")
+    year_to_date_target: bool = spec_field(
+        False, description="Pay only the amount still needed to reach the calendar-year dividend target."
+    )
 
 
 class CorporateIncomeTaxEvent(CorporateEvent):
@@ -4260,7 +4269,15 @@ EVENT_ACTIONS: tuple[str, ...] = (
 
 #: Payment sources of the household waterfall (``people.tax_unit.DEFAULT_WITHDRAWAL_ORDER``).
 WithdrawalSource = Literal[
-    "bank", "fixed_income", "brokerage", "roth_basis", "pretax", "roth_earnings", "reserve", "tax_free"
+    "bank",
+    "fixed_income",
+    "brokerage",
+    "roth_basis",
+    "pretax",
+    "roth_earnings",
+    "reserve",
+    "tax_free",
+    "corporate_dividend",
 ]
 
 
@@ -4285,7 +4302,8 @@ class HouseholdSpec(SpecModel):
         description="Household payment waterfall: the order sources are drawn to pay bills and taxes, across "
         "every member. Each source exactly once, starting with 'bank'. Defaults to bank, fixed_income, brokerage, "
         "roth_basis, pretax, roth_earnings, reserve (fixed_income and reserve may be left out: they then take those "
-        "places).",
+        "places). Canadian forecasts may add corporate_dividend to cover monthly bills and dated Ontario "
+        "tax payments using corporations with shortfall_dividends_from set.",
         core="Family.withdrawal_order",
     )
     events: list[Event] = spec_field(default_factory=list, description="Dated life events.")

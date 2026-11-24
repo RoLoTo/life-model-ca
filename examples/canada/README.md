@@ -43,6 +43,23 @@ projection policy.
 The older one-paycheque prototype remains available as
 `python -m life_model.canada.shadow examples/canada/ontario-payroll-2026.json`.
 
+## Corporate dividends for household shortfalls
+
+Set `shortfall_dividends_from` on a corporation and place
+`corporate_dividend` in the household's `withdrawal_order` to fund
+monthly bills and dated Ontario income tax payments. For example, use
+`[bank, brokerage, tax_free, corporate_dividend, pretax]` to draw from
+spendable personal cash, taxable accounts and TFSAs before the corporation
+and discretionary RRSP withdrawals. Payables and the corporate tax
+holdback limit the cash available for a dividend.
+
+A scheduled `corporate_pay_dividend` with `year_to_date_target: true`
+pays the gap between its target and the corporation's dividends already
+paid in the same calendar year. Qualifying payments still count in the
+appropriate corporate fiscal year for the refundable tax calculation.
+Financial year-end refunds include dividends funded when that month's bills
+are settled. Cash from a refund becomes available on its settlement date.
+
 ## Mortgage payoff at maturity
 
 Add `pay_mortgage_at_maturity` with the home id, a full calendar date,

@@ -19,6 +19,7 @@ class CorporateInterestAccount(FinancialAccount):
         super().__init__(owner, float(balance))
         self.annual_yield_pct = annual_yield_pct
         self._earned = Decimal(0)
+        self._credited_on: date | None = None
         self._through = date(self.model.year, self.model.month, 1)
 
     @property
@@ -42,7 +43,8 @@ class CorporateInterestAccount(FinancialAccount):
         available = corp.cash if source is corp.bank else self.value
         if abs(amount) > available:
             raise CorporateCashShortfall(corp, on, reference, abs(amount) - available)
-        self._accrue_until(on)
+        # A later transfer on the credit date uses the interest already posted for that day.
+        self._accrue_until(on + timedelta(days=1) if on == self._credited_on else on)
         source.withdraw(float(abs(amount)))
         target.deposit(float(abs(amount)))
         self.model.ledger.post(
@@ -56,6 +58,7 @@ class CorporateInterestAccount(FinancialAccount):
 
     def credit_interest(self, on: date) -> None:
         self._accrue_until(on + timedelta(days=1))
+        self._credited_on = on
         interest = cents(self._earned)
         self._earned = Decimal(0)
         if not interest:

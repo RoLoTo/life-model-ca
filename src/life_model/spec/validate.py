@@ -587,10 +587,18 @@ class _SpecChecker:
             for collection in ("jobs", "accounts", "debts", "housing", "insurance", "giving", "children"):
                 for j, item in enumerate(getattr(p, collection)):
                     claim(item.id, f"people[{i}].{collection}[{j}].id")
+        shortfall_dividends = "corporate_dividend" in (self.spec.withdrawal_order or [])
+        if shortfall_dividends and (
+            self.spec.meta.ontario_retirement_tax is None
+            or not any(corp.shortfall_dividends_from is not None for corp in self.spec.corporations)
+        ):
+            self.error("withdrawal_order", "Corporate dividends require Ontario tax and an opted-in corporation.")
         for i, corp in enumerate(self.spec.corporations):
             path = f"corporations[{i}]"
             claim(corp.id, f"{path}.id")
             self.check_person_ref(corp.shareholder, f"{path}.shareholder")
+            if corp.shortfall_dividends_from is not None and not shortfall_dividends:
+                self.error(f"{path}.shortfall_dividends_from", "Include corporate_dividend in the withdrawal order.")
             for name in ("payables", "operating_balances", "dividend_refunds"):
                 for key, balance in getattr(corp, name).items():
                     if (balance.due.year, balance.due.month) < (self.start, self.start_month):

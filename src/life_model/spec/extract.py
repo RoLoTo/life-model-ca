@@ -166,6 +166,7 @@ class _Extractor:
                     shareholder=self.pid(corp.shareholder),
                     cash=corp.cash,
                     fiscal_year_end_month=corp.fiscal_year_end_month,
+                    shortfall_dividends_from=corp.shortfall_dividends_from,
                     investments=s.CorporateInterestAccountSpec(
                         balance=corp.investments.value, annual_yield_pct=corp.investments.annual_yield_pct
                     )
@@ -174,6 +175,7 @@ class _Extractor:
                     investment_interest_ytd=corp.investment_interest.get(fiscal_year, Decimal(0)),
                     nerdtoh=corp.nerdtoh,
                     dividends_paid_ytd=corp.dividends_paid.get(fiscal_year, Decimal(0)),
+                    calendar_dividends_paid_ytd=corp.calendar_dividends_paid.get(self.start, Decimal(0)),
                     dividend_refunds={
                         year: s.CorporateDividendRefundSpec(amount=claim.amount, due=claim.due)
                         for year, claim in corp.dividend_refunds.items()

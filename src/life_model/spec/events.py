@@ -670,11 +670,16 @@ def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEven
     if isinstance(event, s.CorporatePayDividendEvent):
 
         def pay_dividend():
+            amount = event.amount
+            if event.year_to_date_target:
+                amount -= corp.calendar_dividends_paid.get(on.year, 0)
+            if amount <= 0:
+                return
             corp.pay_dividend(
                 person,
                 on,
                 event.id,
-                event.amount,
+                amount,
                 up_to_available=event.up_to_available,
                 redeem_investments=event.redeem_investments,
             )
@@ -686,6 +691,7 @@ def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEven
         return [dividend]
 
     refund_on = None
+    defer_refund = False
     if isinstance(event, s.CorporatePayrollEvent):
         due = event.remits_on
         key = f"payroll:{event.id}"
@@ -704,10 +710,16 @@ def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEven
         due = event.settles_on
         key = f"income-tax:{on.year}"
         refund_on = event.refund_on
+        defer_refund = corp.allows_shortfall_dividends(on)
 
         def accrue():
             corp.accrue_income_tax(
-                on, due, event.rate_pct, refund_on=refund_on, redeem_investments=event.redeem_investments
+                on,
+                due,
+                event.rate_pct,
+                refund_on=refund_on,
+                redeem_investments=event.redeem_investments,
+                defer_dividend_refund=defer_refund,
             )
 
         priority = 1
@@ -716,6 +728,19 @@ def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEven
     accrual = _life_event(on.year, _name(event, f"{corp.name} {action}"), event, accrue, month=on.month)
     accrual.same_day_priority = priority
     result = [accrual]
+    if defer_refund:
+        result.append(
+            LifeEvent(
+                on.year,
+                f"{corp.name} dividend refund accrual",
+                corp.accrue_dividend_refund_after_bills,
+                on,
+                refund_on,
+                month=on.month,
+                day=on.day,
+                stage="post_step",
+            )
+        )
     if due != on and due.year <= builder.model.end_year:
         result.append(corp.settlement_event(key, due))
     if refund_on is not None and refund_on.year <= builder.model.end_year:

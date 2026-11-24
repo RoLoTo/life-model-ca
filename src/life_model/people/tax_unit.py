@@ -5,8 +5,10 @@
 
 import math
 import warnings
+from calendar import monthrange
 from collections import deque
 from dataclasses import replace
+from datetime import date
 from typing import TYPE_CHECKING
 
 from ..ledger import FlowKind, debt_label
@@ -81,6 +83,8 @@ def validate_withdrawal_order(order: "tuple[str, ...] | list[str] | None") -> tu
         required.add("tax_free")
         if not {"roth_basis", "roth_earnings"}.intersection(order):
             required.difference_update({"roth_basis", "roth_earnings"})
+    if "corporate_dividend" in order:
+        required.add("corporate_dividend")
     if set(order) != required or len(order) != len(required) or order[0] != "bank":
         raise ValueError(
             f"withdrawal_order must list each of {sorted(required)} exactly once, starting with 'bank'; got {order}"
@@ -667,6 +671,7 @@ class TaxUnit:
         cause: str | None = None,
         sink: str | None = None,
         to_account=None,
+        dividend_on: date | None = None,
     ) -> float:
         """Pay ``amount`` now through the household waterfall. Returns the unpaid shortfall.
 
@@ -678,7 +683,8 @@ class TaxUnit:
 
         What is paid is posted to the ledger as ``kind`` (keyword-only), out to ``sink`` or, for a
         purchase of a household asset, into ``to_account``. The shortfall is not posted: a caller
-        that carries it as debt books it with :meth:`Person.add_debt`.
+        that carries it as debt books it with :meth:`Person.add_debt`. Supply ``dividend_on`` for a
+        dated Canadian tax payment that may use the optional corporate dividend step.
         """
         cause = cause or sink or "bill payment"
         post = {"kind": kind, "cause": cause, "sink": sink, "to_account": to_account}
@@ -687,7 +693,7 @@ class TaxUnit:
             for source in self.withdrawal_order[1:]:
                 if remaining <= 0:
                     break
-                self._raise_cash(source, remaining)
+                self._raise_cash(source, remaining, dividend_on=dividend_on, reference=cause)
                 remaining = self._pay_from_banks(remaining, **post)
         return max(0.0, remaining)
 
@@ -744,10 +750,16 @@ class TaxUnit:
             return accounts[0]
         return self.members[0].cash_destination
 
-    def _raise_cash(self, source: str, amount: float) -> float:
+    def _raise_cash(self, source: str, amount: float, *, dividend_on: date | None = None, reference: str = "") -> float:
         """Move up to ``amount`` from ``source`` (a non-bank waterfall step) into members' banks,
         posting whatever the draw makes taxable. Unsized: the caller accounts for any tax. Returns
         the amount raised."""
+        if source == "corporate_dividend":
+            if dividend_on is None:
+                return 0.0
+            from ..canada.corporation import fund_shortfall_with_dividends
+
+            return fund_shortfall_with_dividends(self.members, dividend_on, amount, reference)
         before = self._source_balances(source)
         raised = 0.0
         for member in self._members_for(source):
@@ -1212,6 +1224,7 @@ class TaxUnit:
         bills = tax_payments + carried + spending + housing
         when = f"{model.year}-{model.month:02d}"
         if bills > 0:
+            month_end = date(model.year, model.month, monthrange(model.year, model.month)[1])
             self._draw_hsa_for_medical(bills)
             paid_from = {}
             with model.ledger.caused_by(f"pay {when} bills"):
@@ -1219,7 +1232,7 @@ class TaxUnit:
                 for source in self.withdrawal_order[1:]:
                     if remaining < 0.005:
                         break
-                    self._raise_cash(source, remaining)
+                    self._raise_cash(source, remaining, dividend_on=month_end, reference="monthly-bills")
                     remaining = self._pay_from_banks(remaining, paid_from=paid_from)
             shortfall = round_money(max(0.0, remaining))
             payer = self._payer_account()

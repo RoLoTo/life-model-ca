@@ -48,7 +48,16 @@ class CorporateCashShortfall(ValueError):
 
 
 class Corporation(LifeModelAgent):
-    def __init__(self, model, name: str, opening_cash: Decimal, *, shareholder=None, fiscal_year_end_month: int = 12):
+    def __init__(
+        self,
+        model,
+        name: str,
+        opening_cash: Decimal,
+        *,
+        shareholder=None,
+        fiscal_year_end_month: int = 12,
+        shortfall_dividends_from: date | None = None,
+    ):
         if opening_cash < 0:
             raise ValueError("Opening corporate cash cannot be negative")
         if not 1 <= fiscal_year_end_month <= 12:
@@ -57,6 +66,7 @@ class Corporation(LifeModelAgent):
         self.name = name
         self.fiscal_year_end_month = fiscal_year_end_month
         self.shareholder = shareholder
+        self.shortfall_dividends_from = shortfall_dividends_from
         self.bank = FinancialAccount(self, float(opening_cash))
         self.payables: dict[str, Payable] = {}
         self.operating_balances: dict[str, OperatingBalance] = {}
@@ -66,6 +76,7 @@ class Corporation(LifeModelAgent):
         self.investment_interest: dict[int, Decimal] = {}
         self.nerdtoh = Decimal(0)
         self.dividends_paid: dict[int, Decimal] = {}
+        self.calendar_dividends_paid: dict[int, Decimal] = {}
         self.dividend_refunds: dict[int, DividendRefund] = {}
 
     @property
@@ -95,6 +106,9 @@ class Corporation(LifeModelAgent):
                 for year, refund in self.dividend_refunds.items()
             ),
         ]
+
+    def allows_shortfall_dividends(self, when: date) -> bool:
+        return self.shortfall_dividends_from is not None and when >= self.shortfall_dividends_from
 
     def fiscal_year(self, when: date) -> int:
         """The closing year of the fiscal period containing this day."""
@@ -305,7 +319,8 @@ class Corporation(LifeModelAgent):
         *,
         up_to_available: bool = False,
         redeem_investments: bool = False,
-    ) -> None:
+    ) -> Decimal:
+        """Pay a dividend and return the cash transferred."""
         policy = getattr(self.model, "income_tax_policy", None)
         if recipient is not self.shareholder or getattr(policy, "owner", None) is not recipient:
             raise ValueError("Corporate dividends require the shareholder's Ontario return policy")
@@ -321,7 +336,7 @@ class Corporation(LifeModelAgent):
                 projected_tax = ontario_ccpc_interest_tax(interest, self.operating_profit.get(year, Decimal(0))).total
             amount = min(amount, max(Decimal(0), self.cash + invested - self.cash_obligations() - projected_tax))
         if not amount:
-            return
+            return Decimal(0)
         if redeem_investments:
             self._redeem_for(amount, on, f"fund {event_id}")
         self._require_cash(amount, on, event_id)
@@ -334,7 +349,9 @@ class Corporation(LifeModelAgent):
         )
         policy.record_dividend(on, event_id, amount)
         self.dividends_paid[year] = self.dividends_paid.get(year, Decimal(0)) + amount
+        self.calendar_dividends_paid[on.year] = self.calendar_dividends_paid.get(on.year, Decimal(0)) + amount
         self._record("dividend", on, reference=event_id, amount_cad=str(amount), fiscal_year=year)
+        return amount
 
     def accrue_income_tax(
         self,
@@ -344,6 +361,7 @@ class Corporation(LifeModelAgent):
         *,
         refund_on: date | None = None,
         redeem_investments: bool = False,
+        defer_dividend_refund: bool = False,
     ) -> str:
         fiscal_end = fiscal_year_end(on.year, self.fiscal_year_end_month)
         if on != fiscal_end:
@@ -371,25 +389,15 @@ class Corporation(LifeModelAgent):
                 interest_ontario_cad=str(passive.ontario),
                 nerdtoh_added_cad=str(refundable),
             )
-        dividends = self.dividends_paid.get(on.year, Decimal(0))
-        refund = noneligible_dividend_refund(dividends, self.nerdtoh + refundable) if dividends else Decimal(0)
-        if refund and (refund_on is None or refund_on <= on):
-            raise ValueError("Supply a dividend refund assessment date after the corporate fiscal close")
+        pool = self.nerdtoh + refundable
+        refund = Decimal(0) if defer_dividend_refund else self._dividend_refund_amount(on, refund_on, pool)
         key = f"income-tax:{on.year}"
         self.accrue(key, tax, due, redeem_investments=redeem_investments)
-        self.nerdtoh += refundable - refund
-        if dividends:
+        self.nerdtoh = pool
+        if not defer_dividend_refund and (dividends := self.dividends_paid.get(on.year)):
             jurisdictions.update(dividends_paid_cad=str(dividends), dividend_refund_cad=str(refund))
         if refund:
-            assert refund_on is not None
-            self.dividend_refunds[on.year] = DividendRefund(refund, refund_on)
-            self.model.ledger.post(
-                float(refund),
-                FlowKind.TAX,
-                to_account=self._dividend_refund_label(on.year),
-                source="CRA",
-                cause=f"Accrue dividend refund for fiscal {on.year}",
-            )
+            self._book_dividend_refund(on, refund_on, refund)
         self._record(
             "income_tax",
             on,
@@ -402,6 +410,38 @@ class Corporation(LifeModelAgent):
             **jurisdictions,
         )
         return key
+
+    def _dividend_refund_amount(self, on: date, refund_on: date | None, pool: Decimal) -> Decimal:
+        dividends = self.dividends_paid.get(on.year, Decimal(0))
+        refund = noneligible_dividend_refund(dividends, pool) if dividends else Decimal(0)
+        if refund and (refund_on is None or refund_on <= on):
+            raise ValueError("Supply a dividend refund assessment date after the corporate fiscal close")
+        return refund
+
+    def _book_dividend_refund(self, on: date, refund_on: date | None, amount: Decimal) -> None:
+        assert refund_on is not None
+        self.nerdtoh -= amount
+        self.dividend_refunds[on.year] = DividendRefund(amount, refund_on)
+        self.model.ledger.post(
+            float(amount),
+            FlowKind.TAX,
+            to_account=self._dividend_refund_label(on.year),
+            source="CRA",
+            cause=f"Accrue dividend refund for fiscal {on.year}",
+        )
+
+    def accrue_dividend_refund_after_bills(self, on: date, refund_on: date | None) -> None:
+        """Include distributions paid for personal bills on the fiscal closing date."""
+        refund = self._dividend_refund_amount(on, refund_on, self.nerdtoh)
+        if refund:
+            self._book_dividend_refund(on, refund_on, refund)
+            self._record(
+                "dividend_refund_accrual",
+                on,
+                fiscal_year=on.year,
+                amount_cad=str(refund),
+                dividends_paid_cad=str(self.dividends_paid[on.year]),
+            )
 
     def settle_dividend_refund(self, year: int, on: date) -> None:
         refund = self.dividend_refunds.pop(year, None)
@@ -476,3 +516,33 @@ class Corporation(LifeModelAgent):
         )
         event.same_day_priority = -3
         return event
+
+
+def fund_shortfall_with_dividends(members, on: date, amount: float, reference: str) -> float:
+    """Raise up to a dated household shortfall from opted-in corporations."""
+    model = members[0].model
+    owner = getattr(getattr(model, "income_tax_policy", None), "owner", None)
+    if owner is None or owner not in members or owner.is_deceased:
+        return 0.0
+    bank = owner.primary_bank_account
+    if bank is None or bank.reserve:
+        return 0.0
+    wanted = cents(Decimal(str(amount)))
+    remaining = wanted
+    corporations = (
+        corp
+        for corp in model.agents
+        if isinstance(corp, Corporation) and corp.shareholder is owner and corp.allows_shortfall_dividends(on)
+    )
+    for corp in sorted(corporations, key=lambda corp: (str(getattr(corp, "spec_id", "")), corp.name, corp.unique_id)):
+        if remaining <= 0:
+            break
+        remaining -= corp.pay_dividend(
+            owner,
+            on,
+            f"shortfall-dividend:{corp.unique_id}:{on.isoformat()}:{reference}",
+            remaining,
+            up_to_available=True,
+            redeem_investments=True,
+        )
+    return float(wanted - remaining)
