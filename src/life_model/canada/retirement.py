@@ -1,6 +1,7 @@
 """Test a living budget against the same dated Canadian household scenario."""
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -15,7 +16,7 @@ from ..housing.home import MortgagePayoffShortfall
 from ..ledger import household_balance_sheet
 from ..lifeevents import LifeEvent, LifeEvents
 from ..model import EventKind
-from ..people.tax_unit import TaxUnit
+from ..people.tax_unit import DEFAULT_WITHDRAWAL_ORDER, TaxUnit
 from ..spec.schema import At, OneTimeExpenseEvent
 from ..tax.ontario import money
 from ..tax.ontario_policy import cash_reserve_for_owner
@@ -54,13 +55,15 @@ class SpendingTrial:
     gap: SpendingGap | None
     ending_bank_cash: Decimal | None = None
     reserve_for_unpaid_tax: Decimal | None = None
-    #: Personal debts still owed at the horizon, which the ending cash must also cover.
+    #: Debt above its ending allowance, which the ending cash must also cover.
     ending_liabilities: Decimal | None = None
     cash_after_tax_reserve: Decimal | None = None
     ending_mortgage_principal: Decimal | None = None
     ending_consolidated_net_worth: Decimal | None = None
     #: What each ``withdrawal_order`` source still holds after the final reserve is funded.
     ending_sources: dict[str, Decimal] | None = None
+    #: Debts still owed at the horizon, by debt id, before the ending cash repays any above their allowance.
+    ending_debts: dict[str, Decimal] | None = None
 
 
 @dataclass(frozen=True)
@@ -99,47 +102,112 @@ def _dated_gap(error: ValueError, model) -> SpendingGap:
     return SpendingGap(type(error).__name__, when.isoformat() if when else month, money(D(str(error.amount))))
 
 
-def personal_liabilities(model, owner) -> Decimal:
-    """Every debt on the owner's balance sheet, such as loans, credit lines and unpaid bills.
+@dataclass(frozen=True)
+class EndingTargets:
+    """What the household should still hold, and may still owe, at the end of the horizon.
 
-    Personal income tax is reserved separately and is excluded here.
+    ``sources`` maps ``withdrawal_order`` sources to the balance to keep in each. A bank target adds to
+    the ending cash reserve, and a corporation's target is its remaining dividend capacity. ``debts``
+    maps debt ids to the amount that may remain owing: a mortgage uses its home's id, other debts their
+    own id. Debts without an allowance must be repaid in full.
     """
-    sheet = household_balance_sheet(model)
-    owed = -sum(
-        value
-        for label, value in sheet.lines.items()
-        if value < 0 and sheet.owners.get(label) == owner.unique_id and not label.startswith("TaxDue:")
+
+    sources: Mapping[str, Decimal] = field(default_factory=dict)
+    debts: Mapping[str, Decimal] = field(default_factory=dict)
+
+
+def _debt_id(agent) -> str:
+    if getattr(agent, "spec_id", None):
+        return agent.spec_id
+    home = getattr(agent, "home", None)
+    if getattr(home, "spec_id", None):
+        return home.spec_id
+    return f"{type(agent).__name__}:{agent.unique_id}"
+
+
+def personal_debts(model, owner) -> dict[str, Decimal]:
+    """Every debt on the owner's balance sheet, keyed by debt id. Unpaid bills are ``unpaid_bills``."""
+    from ..base_classes import Loan
+    from ..debt.credit_card import RevolvingDebt
+
+    debts = {"unpaid_bills": money(D(str(owner.debt)))}
+    for agent in model.agents:
+        if isinstance(agent, Loan | RevolvingDebt) and agent.person is owner:
+            key = _debt_id(agent)
+            debts[key] = debts.get(key, _ZERO) + money(D(str(agent.principal)))
+    return debts
+
+
+def _debts_due(model, owner, allowances: Mapping[str, Decimal]) -> Decimal:
+    """Debt above each allowance, which the ending cash must repay."""
+    return sum(
+        (max(_ZERO, owed - allowances.get(key, _ZERO)) for key, owed in personal_debts(model, owner).items()), _ZERO
     )
-    return money(D(str(owed)))
 
 
-def _final_reserve_need(model, owner, cash_reserve: Decimal) -> Decimal:
-    """Cash still needed for personal tax, debts still owed and the ending reserve."""
-    owed = cash_reserve_for_owner(owner) + personal_liabilities(model, owner)
-    return owed + cash_reserve + _FINAL_RESERVE_MARGIN - D(str(owner.usable_bank_balance))
+def _source_amount(model, unit, owner, source: str, on: date) -> Decimal:
+    if source == "bank":
+        amount = owner.usable_bank_balance
+    elif source == "corporate_dividend":
+        amount = sum(
+            corp.dividend_capacity(on)
+            for corp in model.agents
+            if isinstance(corp, Corporation) and corp.shareholder is owner and corp.allows_shortfall_dividends(on)
+        )
+    else:
+        amount = sum(unit._source_balance(member, source) for member in unit.members)
+    return money(D(str(amount)))
 
 
-def fund_final_reserve(model, *, person: str, cash_reserve: Decimal = _ZERO) -> None:
+def _final_reserve_need(model, owner, cash_reserve: Decimal, ending: EndingTargets) -> Decimal:
+    """Cash still needed for personal tax, debts above their allowances and the ending cash target."""
+    owed = cash_reserve_for_owner(owner) + _debts_due(model, owner, ending.debts)
+    cash_target = cash_reserve + ending.sources.get("bank", _ZERO)
+    return owed + cash_target + _FINAL_RESERVE_MARGIN - D(str(owner.usable_bank_balance))
+
+
+def fund_final_reserve(
+    model,
+    *,
+    person: str,
+    cash_reserve: Decimal = _ZERO,
+    ending: EndingTargets | None = None,
+    from_year: int | None = None,
+) -> None:
     """Schedule a final-December draw through the household waterfall for the horizon's tax, debts and reserve.
 
     Every non-bank source in ``withdrawal_order`` is drawn in turn, after the month's bills and before
-    the year's tax settlement. Taxable draws are added to the final return, and each source is drawn
-    again until the larger tax is covered or the source is exhausted.
+    the year's tax settlement, down to its ending target. Taxable draws are added to the final return,
+    and each source is drawn again until the larger tax is covered or the source reaches its target.
+    From January of ``from_year``, non-bank ending targets are also floors for waterfall draws, capped
+    registered withdrawals and capped dividends, so earlier spending does not use the kept balances.
     """
+    ending = ending or EndingTargets()
     owner = model.household.people[person]
     end = date(model.end_year, 12, 31)
+    floors = {source: float(target) for source, target in ending.sources.items() if source != "bank" and target}
+
+    def protect():
+        owner.withdrawal_floors = dict(floors)
+
+    if floors:
+        LifeEvents(
+            model, [LifeEvent(from_year or model.year, "Protect ending targets", protect, stage="pre_step", month=1)]
+        )
 
     def draw():
         unit = TaxUnit.for_member(owner)
         with model.ledger.caused_by("fund the final tax reserve"):
             for source in unit.withdrawal_order[1:]:
                 for round_number in range(_FINAL_RESERVE_ROUNDS):
-                    need = _final_reserve_need(model, owner, cash_reserve)
-                    if need < _CENT:
+                    need = _final_reserve_need(model, owner, cash_reserve, ending)
+                    spare = _source_amount(model, unit, owner, source, end) - ending.sources.get(source, _ZERO)
+                    amount = min(need, spare)
+                    if need < _CENT or amount < _CENT:
                         break
                     # Each round is a separate payment, so a repeated corporate dividend has its own reference.
                     reference = f"final-reserve-{round_number + 1}"
-                    if unit._raise_cash(source, float(need), dividend_on=end, reference=reference) < 0.005:
+                    if unit._raise_cash(source, float(amount), dividend_on=end, reference=reference) < 0.005:
                         break
 
     LifeEvents(
@@ -152,27 +220,29 @@ def ending_sources(model, *, person: str) -> dict[str, Decimal]:
     owner = model.household.people[person]
     unit = TaxUnit.for_member(owner)
     end = date(model.end_year, 12, 31)
-    balances = {}
-    for source in unit.withdrawal_order:
-        if source == "bank":
-            amount = owner.usable_bank_balance
-        elif source == "corporate_dividend":
-            amount = sum(
-                corp.dividend_capacity(end)
-                for corp in model.agents
-                if isinstance(corp, Corporation) and corp.shareholder is owner and corp.allows_shortfall_dividends(end)
-            )
-        else:
-            amount = sum(unit._source_balance(member, source) for member in unit.members)
-        balances[source] = money(D(str(amount)))
-    return balances
+    return {source: _source_amount(model, unit, owner, source, end) for source in unit.withdrawal_order}
 
 
-def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed) -> SpendingTrial:
+def _check_targets(spec, ending: EndingTargets) -> EndingTargets:
+    order = set(spec.withdrawal_order or DEFAULT_WITHDRAWAL_ORDER)
+    for name, amounts in (("source", ending.sources), ("debt", ending.debts)):
+        for key, value in amounts.items():
+            value = D(str(value))
+            if not value.is_finite() or value < 0:
+                raise ValueError(f"Ending {name} target for {key!r} must be a nonnegative amount")
+            if name == "source" and key not in order:
+                raise ValueError(f"Ending target names {key!r}, which is not in the withdrawal order")
+    return EndingTargets(
+        {key: money(D(str(value))) for key, value in ending.sources.items()},
+        {key: money(D(str(value))) for key, value in ending.debts.items()},
+    )
+
+
+def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed, ending) -> SpendingTrial:
     case = _with_budget(spec, person, from_year, spending, index_pct)
     model = build(case, seed=seed, checks="strict", collect_data=False)
     owner = model.household.people[person]
-    fund_final_reserve(model, person=person, cash_reserve=cash_reserve)
+    fund_final_reserve(model, person=person, cash_reserve=cash_reserve, ending=ending, from_year=from_year)
     try:
         while not model.is_finished:
             year, month = model.year, model.month
@@ -193,14 +263,23 @@ def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed) 
         raise ValueError("The selected spending horizon must end while the household owner is alive")
 
     end = date(model.end_year, 12, 31)
+    debts = personal_debts(model, owner)
+    unknown = set(ending.debts) - set(debts)
+    if unknown:
+        raise ValueError(f"Ending debt targets name no debt in the household: {sorted(unknown)}")
     bank = money(D(str(owner.usable_bank_balance)))
     returns = model.income_tax_policy.tax_settlements()
     unpaid_tax = sum((max(D(0), tax.balance - tax.amount_settled) for tax in returns), D(0))
-    liabilities = personal_liabilities(model, owner)
+    liabilities = _debts_due(model, owner, ending.debts)
     available = bank - unpaid_tax - liabilities
+    sources = ending_sources(model, person=person)
     gap = None
-    if available < cash_reserve:
-        gap = SpendingGap("ending_cash_reserve", end.isoformat(), cash_reserve - available)
+    cash_target = cash_reserve + ending.sources.get("bank", _ZERO)
+    if available < cash_target:
+        gap = SpendingGap("ending_cash_reserve", end.isoformat(), cash_target - available)
+    for source, target in ending.sources.items():
+        if source != "bank" and gap is None and sources[source] < target:
+            gap = SpendingGap(f"ending_target:{source}", end.isoformat(), target - sources[source])
     mortgage = sum(home.mortgage.principal for home in owner.homes if home.mortgage is not None and not home.sold)
     net_worth = household_balance_sheet(model).net_worth
     return SpendingTrial(
@@ -212,11 +291,12 @@ def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed) 
         available,
         money(D(str(mortgage))),
         money(D(str(net_worth))),
-        ending_sources(model, person=person),
+        sources,
+        {key: owed for key, owed in debts.items() if owed},
     )
 
 
-def _settings(spec, person, from_year, index_pct, cash_reserve):
+def _settings(spec, person, from_year, index_pct, cash_reserve, ending=None):
     spec = load_spec(spec)
     if spec.meta.ontario_retirement_tax is None or len(spec.people) != 1:
         raise ValueError("The retirement budget requires one household owner with the Ontario return policy")
@@ -226,7 +306,7 @@ def _settings(spec, person, from_year, index_pct, cash_reserve):
     index_pct, cash_reserve = D(str(index_pct)), D(str(cash_reserve))
     if any(not value.is_finite() or value < 0 for value in (index_pct, cash_reserve)):
         raise ValueError("Indexation and ending cash reserve must be nonnegative")
-    return spec, index_pct, money(cash_reserve)
+    return spec, index_pct, money(cash_reserve), _check_targets(spec, ending or EndingTargets())
 
 
 def spending_spec(
@@ -238,7 +318,7 @@ def spending_spec(
     index_pct: Decimal = _ZERO,
 ):
     """Return a new household spec with this indexed living budget added."""
-    spec, index_pct, _ = _settings(spec, person, from_year, index_pct, D(0))
+    spec, index_pct, _, _ = _settings(spec, person, from_year, index_pct, D(0))
     return _with_budget(spec, person, from_year, _budget_amount(annual_spending), index_pct)
 
 
@@ -258,10 +338,11 @@ def evaluate_spending(
     index_pct: Decimal = _ZERO,
     cash_reserve: Decimal = _ZERO,
     seed: int = 1,
+    ending: EndingTargets | None = None,
 ) -> SpendingTrial:
     """Test added indexed living spending using the native cash, tax and funding rules."""
-    spec, index_pct, cash_reserve = _settings(spec, person, from_year, index_pct, cash_reserve)
-    return _evaluate(spec, person, from_year, _budget_amount(annual_spending), index_pct, cash_reserve, seed)
+    spec, index_pct, cash_reserve, ending = _settings(spec, person, from_year, index_pct, cash_reserve, ending)
+    return _evaluate(spec, person, from_year, _budget_amount(annual_spending), index_pct, cash_reserve, seed, ending)
 
 
 def search_spending(
@@ -273,14 +354,15 @@ def search_spending(
     index_pct: Decimal = _ZERO,
     cash_reserve: Decimal = _ZERO,
     seed: int = 1,
+    ending: EndingTargets | None = None,
 ) -> SpendingSearch:
     """Bracket a fixed plan's feasible budget in whole dollars, assuming feasibility is monotone."""
-    spec, index_pct, cash_reserve = _settings(spec, person, from_year, index_pct, cash_reserve)
+    spec, index_pct, cash_reserve, ending = _settings(spec, person, from_year, index_pct, cash_reserve, ending)
     if not isinstance(upper_bound, int) or upper_bound <= 0:
         raise ValueError("The spending search needs a positive whole-dollar upper bound")
 
     def trial(amount: int) -> SpendingTrial:
-        return _evaluate(spec, person, from_year, D(amount), index_pct, cash_reserve, seed)
+        return _evaluate(spec, person, from_year, D(amount), index_pct, cash_reserve, seed, ending)
 
     best = trial(0)
     if best.gap:

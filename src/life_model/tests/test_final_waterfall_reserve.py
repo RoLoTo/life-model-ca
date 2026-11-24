@@ -118,3 +118,58 @@ def test_debts_owed_at_the_horizon_are_funded_through_the_waterfall():
     )
     assert trial.cash_after_tax_reserve < EXHAUSTED
     assert indebted.feasible.annual_spending < base.feasible.annual_spending - 1000
+
+
+def test_ending_targets_keep_balances_in_named_sources():
+    from life_model.canada.retirement import EndingTargets
+
+    spec = household()
+    # The Ontario return has no brokerage gain support, so this case uses the Canadian sources only.
+    spec["people"][0]["accounts"] = [a for a in spec["people"][0]["accounts"] if a["kind"] != "brokerage"]
+    base = search_spending(spec, person="owner", from_year=2027, upper_bound=100000)
+    ending = EndingTargets(sources={"tax_free": D(2500), "corporate_dividend": D(10000), "bank": D(500)})
+    kept = search_spending(spec, person="owner", from_year=2027, upper_bound=100000, ending=ending)
+    sources = kept.feasible.ending_sources
+    assert D(2500) <= sources["tax_free"] < D(2500) + EXHAUSTED
+    assert D(10000) <= sources["corporate_dividend"] < D(10000) + EXHAUSTED
+    assert D(500) <= kept.feasible.cash_after_tax_reserve < D(500) + EXHAUSTED
+    assert kept.feasible.annual_spending < base.feasible.annual_spending - 5000
+
+
+def test_debt_allowances_leave_named_debts_owing():
+    from life_model.canada.retirement import EndingTargets
+
+    spec = household()
+    spec["people"][0]["debts"] = [
+        {
+            "kind": "credit_card",
+            "id": "card",
+            "credit_limit": 10000,
+            "balance": 6000,
+            "rate_pct": 0,
+            "payment_strategy": "fixed",
+            "payment_monthly": 100,
+        }
+    ]
+    repaid = search_spending(spec, person="owner", from_year=2027, upper_bound=100000)
+    allowed = search_spending(
+        spec, person="owner", from_year=2027, upper_bound=100000, ending=EndingTargets(debts={"card": D(3600)})
+    )
+    assert allowed.feasible.ending_debts["card"] == D(3600)
+    assert allowed.feasible.ending_liabilities == 0
+    assert allowed.feasible.annual_spending > repaid.feasible.annual_spending + 1000
+
+
+def test_ending_targets_reject_unknown_sources_and_debts():
+    import pytest
+
+    from life_model.canada.retirement import EndingTargets
+
+    with pytest.raises(ValueError, match="not in the withdrawal order"):
+        evaluate_spending(
+            household(), person="owner", from_year=2027, annual_spending=0, ending=EndingTargets(sources={"roth": D(1)})
+        )
+    with pytest.raises(ValueError, match="name no debt"):
+        evaluate_spending(
+            household(), person="owner", from_year=2027, annual_spending=0, ending=EndingTargets(debts={"car": D(1)})
+        )

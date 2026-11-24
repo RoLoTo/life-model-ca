@@ -186,6 +186,8 @@ class Person(LifeModelAgent):
         # A spouse who died this year: their income so far this year is on this person's joint return.
         self.deceased_spouse_this_year: Person | None = None
         self.debt = unpaid_bills_debt
+        #: Balances to keep in each ``withdrawal_order`` source; draws that may empty a source stop at them.
+        self.withdrawal_floors: dict[str, float] = {}
         if self.debt:
             self.model.ledger.name_label(debt_label(self), f"{self.name}'s unpaid-bills debt")
         self._deferred_debt: tuple[int, float] | None = None

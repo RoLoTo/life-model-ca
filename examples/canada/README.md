@@ -82,6 +82,15 @@ source close to empty. `ending_sources` reports what each source still holds,
 and `ending_liabilities` the debts the ending cash covers.
 Assets outside the waterfall, such as homes, are not spent.
 
+Pass `ending=EndingTargets(sources=..., debts=...)` to keep balances or
+leave debts owing at the horizon. `sources` maps waterfall sources to the
+balance to keep: a bank target adds to the ending cash, and a corporation's
+target is its remaining dividend capacity. `debts` maps debt ids to the amount
+that may remain owing. A mortgage uses its home's id, and other debts use their
+own id. From the budget's first year, non-bank targets are floors for waterfall
+draws, capped registered withdrawals and capped dividends, so earlier spending
+does not use the kept balances. RRIF minimum withdrawals still apply.
+
 ## Mortgage payoff at maturity
 
 Add `pay_mortgage_at_maturity` with the home id, a full calendar date,

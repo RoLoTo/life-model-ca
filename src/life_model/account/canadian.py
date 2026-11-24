@@ -109,6 +109,12 @@ def withdraw_registered(
         amount = max(D(0), amount - account.withdrawals_this_year)
     if cap_to_balance:
         amount = min(amount, _whole_cent_balance(account))
+        source = "pretax" if deferred else "tax_free"
+        floor = owner.withdrawal_floors.get(source, 0.0)
+        if floor:
+            accounts = owner.canadian_deferred if deferred else owner.tfsas
+            spare = D(str(sum(a.balance for a in accounts) - floor)).quantize(D(".01"), rounding=ROUND_DOWN)
+            amount = min(amount, max(D(0), spare))
     policy = getattr(account.model, "income_tax_policy", None)
     if deferred and getattr(policy, "owner", None) is not owner:
         raise ValueError("A withdrawal from a Canadian deferred account needs the Ontario return policy")

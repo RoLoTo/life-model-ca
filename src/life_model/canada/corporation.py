@@ -340,6 +340,10 @@ class Corporation(LifeModelAgent):
         year = self.fiscal_year(on)
         if up_to_available:
             amount = min(amount, self.dividend_capacity(on, redeem_investments=redeem_investments))
+            floor = recipient.withdrawal_floors.get("corporate_dividend", 0.0)
+            if floor and self.allows_shortfall_dividends(on):
+                spare = shortfall_dividend_capacity([recipient], on) - Decimal(str(floor))
+                amount = min(amount, max(Decimal(0), spare))
         if not amount:
             return Decimal(0)
         if redeem_investments:
@@ -523,6 +527,26 @@ class Corporation(LifeModelAgent):
         return event
 
 
+def _shortfall_corporations(model, owner, on: date):
+    return sorted(
+        (
+            corp
+            for corp in model.agents
+            if isinstance(corp, Corporation) and corp.shareholder is owner and corp.allows_shortfall_dividends(on)
+        ),
+        key=lambda corp: (str(getattr(corp, "spec_id", "")), corp.name, corp.unique_id),
+    )
+
+
+def shortfall_dividend_capacity(members, on: date) -> Decimal:
+    """Dividend capacity of the corporations that fund the household's shortfalls."""
+    model = members[0].model
+    owner = getattr(getattr(model, "income_tax_policy", None), "owner", None)
+    if owner is None or owner not in members:
+        return Decimal(0)
+    return sum((corp.dividend_capacity(on) for corp in _shortfall_corporations(model, owner, on)), Decimal(0))
+
+
 def fund_shortfall_with_dividends(members, on: date, amount: float, reference: str) -> float:
     """Raise up to a dated household shortfall from opted-in corporations."""
     model = members[0].model
@@ -534,12 +558,7 @@ def fund_shortfall_with_dividends(members, on: date, amount: float, reference: s
         return 0.0
     wanted = cents(Decimal(str(amount)))
     remaining = wanted
-    corporations = (
-        corp
-        for corp in model.agents
-        if isinstance(corp, Corporation) and corp.shareholder is owner and corp.allows_shortfall_dividends(on)
-    )
-    for corp in sorted(corporations, key=lambda corp: (str(getattr(corp, "spec_id", "")), corp.name, corp.unique_id)):
+    for corp in _shortfall_corporations(model, owner, on):
         if remaining <= 0:
             break
         remaining -= corp.pay_dividend(

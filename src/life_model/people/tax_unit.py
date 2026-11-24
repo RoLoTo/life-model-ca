@@ -754,6 +754,11 @@ class TaxUnit:
         """Move up to ``amount`` from ``source`` (a non-bank waterfall step) into members' banks,
         posting whatever the draw makes taxable. Unsized: the caller accounts for any tax. Returns
         the amount raised."""
+        floor = sum(member.withdrawal_floors.get(source, 0.0) for member in self.members)
+        if floor:
+            amount = min(amount, max(0.0, self._source_total(source, dividend_on) - floor))
+            if amount <= 0:
+                return 0.0
         if source == "corporate_dividend":
             if dividend_on is None:
                 return 0.0
@@ -788,6 +793,14 @@ class TaxUnit:
                 raise ValueError(f"Unknown withdrawal source {source!r}")
         self._log_draws(source, before)
         return raised
+
+    def _source_total(self, source: str, on: date | None) -> float:
+        """What the unit holds in a waterfall source; corporations report their dividend capacity on ``on``."""
+        if source == "corporate_dividend":
+            from ..canada.corporation import shortfall_dividend_capacity
+
+            return 0.0 if on is None else float(shortfall_dividend_capacity(self.members, on))
+        return sum(self._source_balance(member, source) for member in self.members)
 
     @staticmethod
     def _source_balance(member: "Person", source: str) -> float:
