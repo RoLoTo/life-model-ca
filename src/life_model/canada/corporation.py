@@ -78,6 +78,7 @@ class Corporation(LifeModelAgent):
         self.dividends_paid: dict[int, Decimal] = {}
         self.calendar_dividends_paid: dict[int, Decimal] = {}
         self.dividend_refunds: dict[int, DividendRefund] = {}
+        self.charitable_gifts: dict[int, Decimal] = {}
 
     @property
     def cash(self) -> Decimal:
@@ -362,6 +363,48 @@ class Corporation(LifeModelAgent):
         self._record("dividend", on, reference=event_id, amount_cad=str(amount), fiscal_year=year)
         return amount
 
+    def make_charitable_gift(
+        self,
+        on: date,
+        event_id: str,
+        amount: Decimal,
+        charity: str,
+        *,
+        redeem_investments: bool = False,
+        up_to_available: bool = False,
+    ) -> Decimal:
+        """Pay a cash gift to a registered charity, claimed against the fiscal year's taxable income.
+
+        With ``up_to_available``, the gift is capped like a capped dividend: at liquid assets after known
+        payables and tax on interest to date, less the shareholder's protected ending dividend capacity.
+        Returns the amount given.
+        """
+        if amount <= 0:
+            raise ValueError("A corporate charitable gift must be positive")
+        if up_to_available:
+            amount = min(amount, self.dividend_capacity(on, redeem_investments=redeem_investments))
+            floor = self.shareholder.withdrawal_floors.get("corporate_dividend", 0.0) if self.shareholder else 0.0
+            if floor and self.allows_shortfall_dividends(on):
+                spare = shortfall_dividend_capacity([self.shareholder], on) - Decimal(str(floor))
+                amount = min(amount, max(Decimal(0), spare))
+            if not amount:
+                return amount
+        if redeem_investments:
+            self._redeem_for(amount, on, f"fund {event_id}")
+        self._require_cash(amount, on, event_id)
+        self.bank.withdraw(float(amount))
+        self.model.ledger.post(
+            float(amount),
+            FlowKind.GIFT,
+            from_account=self.bank,
+            sink=charity,
+            cause=f"Corporate charitable gift {event_id} on {on.isoformat()}",
+        )
+        year = self.fiscal_year(on)
+        self.charitable_gifts[year] = self.charitable_gifts.get(year, Decimal(0)) + amount
+        self._record("charitable_gift", on, reference=event_id, amount_cad=str(amount), fiscal_year=year)
+        return amount
+
     def accrue_income_tax(
         self,
         on: date,
@@ -377,7 +420,13 @@ class Corporation(LifeModelAgent):
             raise ValueError("Corporate tax must accrue on the corporation's fiscal year-end")
         fiscal_start = fiscal_year_end(on.year - 1, self.fiscal_year_end_month) + timedelta(days=1)
         operating_profit = self.operating_profit.get(on.year, Decimal(0))
-        taxable = max(Decimal(0), operating_profit)
+        interest = self.investment_interest.get(on.year, Decimal(0))
+        # Gifts reduce taxable income up to 75% of net income (s. 110.1); unused gifts are not carried
+        # forward. The deduction reduces income taxed at the investment rate before active income.
+        gifts = self.charitable_gifts.get(on.year, Decimal(0))
+        gift_deduction = min(gifts, cents(max(Decimal(0), operating_profit + interest) * Decimal(".75")))
+        investment_gifts = min(gift_deduction, max(Decimal(0), interest + min(Decimal(0), operating_profit)))
+        taxable = max(Decimal(0), operating_profit - (gift_deduction - investment_gifts))
         jurisdictions = {}
         if rate_pct is None:
             calculation = ontario_small_business(taxable, start=fiscal_start, end=fiscal_end)
@@ -385,10 +434,9 @@ class Corporation(LifeModelAgent):
             jurisdictions = {"federal_cad": str(calculation.federal), "ontario_cad": str(calculation.ontario)}
         else:
             tax = cents(taxable * rate_pct / 100)
-        interest = self.investment_interest.get(on.year, Decimal(0))
         refundable = Decimal(0)
         if interest:
-            passive = ontario_ccpc_interest_tax(interest, operating_profit)
+            passive = ontario_ccpc_interest_tax(interest - investment_gifts, operating_profit)
             tax += passive.total
             refundable = passive.refundable
             jurisdictions.update(
@@ -398,6 +446,8 @@ class Corporation(LifeModelAgent):
                 interest_ontario_cad=str(passive.ontario),
                 nerdtoh_added_cad=str(refundable),
             )
+        if gifts:
+            jurisdictions.update(charitable_gifts_cad=str(gifts), gift_deduction_cad=str(gift_deduction))
         pool = self.nerdtoh + refundable
         refund = Decimal(0) if defer_dividend_refund else self._dividend_refund_amount(on, refund_on, pool)
         key = f"income-tax:{on.year}"

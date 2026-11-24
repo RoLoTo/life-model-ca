@@ -3270,6 +3270,9 @@ class CorporationSpec(SpecModel):
     calendar_dividends_paid_ytd: CashAmount = spec_field(
         Decimal(0), description="Dividends paid in the opening calendar year before the run.", unit="CAD"
     )
+    charitable_gifts_ytd: CashAmount = spec_field(
+        Decimal(0), description="Charitable gifts already paid in the opening fiscal year.", unit="CAD"
+    )
     dividend_refunds: dict[Year, CorporateDividendRefundSpec] = spec_field(
         default_factory=dict, description="Outstanding corporate dividend refunds keyed by fiscal closing year."
     )
@@ -3638,6 +3641,29 @@ class CorporatePayDividendEvent(CorporateEvent):
     )
 
 
+class CorporateCharitableGiftEvent(CorporateEvent):
+    """Pay a cash gift to a registered charity, deducted from the fiscal year's corporate taxable income."""
+
+    action: Literal["corporate_charitable_gift"]
+    amount: CashAmount = spec_field(description="Cash gift.", gt=0, unit="CAD")
+    charity: str = spec_field("Registered charity", description="Recipient shown in the ledger.")
+    redeem_investments: bool = spec_field(False, description="Allow redemption of corporate interest-bearing deposits.")
+    up_to_available: bool = spec_field(
+        False,
+        description="Cap the gift at liquid corporate assets after known payables, tax on interest to date and any "
+        "protected ending dividend capacity.",
+    )
+    shareholder_pays_remainder: bool = spec_field(
+        False, description="The shareholder gives any capped remainder personally, claimed on their Ontario return."
+    )
+
+    @model_validator(mode="after")
+    def check_remainder(self):
+        if self.shareholder_pays_remainder and not self.up_to_available:
+            raise ValueError("shareholder_pays_remainder applies to a gift capped with up_to_available")
+        return self
+
+
 class CorporateIncomeTaxEvent(CorporateEvent):
     """Accrue a fiscal-year corporate return from operating profit and payroll."""
 
@@ -3871,6 +3897,21 @@ class OntarioTaxStatementEvent(EventBase):
             raise ValueError("Supply at least one amount for the Ontario tax statement")
         if self.pension_withheld > self.cpp_retirement + self.oas_benefits:
             raise ValueError("Pension withholding cannot exceed reported benefits")
+        return self
+
+
+class CharitableGiftEvent(EventBase):
+    """Pay a cash gift to a registered charity through the household waterfall and claim it on the Ontario return."""
+
+    action: Literal["charitable_gift"]
+    id: Identifier = spec_field(description="Unique id of the gift on the owner's return.")
+    amount: CashAmount = spec_field(description="Cash gift claimed in the calendar year paid.", gt=0, unit="CAD")
+    charity: str = spec_field("Registered charity", description="Recipient shown in the ledger.")
+
+    @model_validator(mode="after")
+    def check_gift_date(self) -> "CharitableGiftEvent":
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("charitable_gift requires an explicit payment date")
         return self
 
 
@@ -4210,10 +4251,12 @@ Event = Annotated[
     | WithdrawRegisteredEvent
     | RRSPToRRIFEvent
     | OntarioTaxStatementEvent
+    | CharitableGiftEvent
     | CorporateOperatingCashEvent
     | CorporateInvestmentTransferEvent
     | CorporatePayrollEvent
     | CorporatePayDividendEvent
+    | CorporateCharitableGiftEvent
     | CorporateIncomeTaxEvent
     | SellPrivateSharesEvent
     | ExercisePrivateOptionsEvent
@@ -4256,10 +4299,12 @@ EVENT_ACTIONS: tuple[str, ...] = (
     "withdraw_registered",
     "rrsp_to_rrif",
     "ontario_tax_statement",
+    "charitable_gift",
     "corporate_operating_cash",
     "corporate_investment_transfer",
     "corporate_payroll",
     "corporate_pay_dividend",
+    "corporate_charitable_gift",
     "corporate_income_tax",
     "sell_private_shares",
     "exercise_private_options",

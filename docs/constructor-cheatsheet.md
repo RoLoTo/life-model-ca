@@ -98,7 +98,7 @@ Each spec entry, the core class the builder constructs, the fields you must give
 | ContributionPlan | `ContributionPlan` | `account` | `max_out=False`, `source='bank'`, `months=12` |
 | SavingsPolicy | `SavingsPolicy` | `cash_floor`, `sweep_to` | `reserve_ontario_tax=False` |
 | RothConversion | `RothConversionPolicy` | — | — |
-| CorporationSpec | `Corporation` | `id`, `name`, `shareholder`, `cash` | `fiscal_year_end_month=12`, `investment_interest_ytd=Decimal('0')`, `nerdtoh=Decimal('0')`, `dividends_paid_ytd=Decimal('0')`, `calendar_dividends_paid_ytd=Decimal('0')`, `operating_profit_ytd=Decimal('0')` |
+| CorporationSpec | `Corporation` | `id`, `name`, `shareholder`, `cash` | `fiscal_year_end_month=12`, `investment_interest_ytd=Decimal('0')`, `nerdtoh=Decimal('0')`, `dividends_paid_ytd=Decimal('0')`, `calendar_dividends_paid_ytd=Decimal('0')`, `charitable_gifts_ytd=Decimal('0')`, `operating_profit_ytd=Decimal('0')` |
 | CorporateInterestAccountSpec | `CorporateInterestAccount` | `balance`, `annual_yield_pct` | — |
 
 ## Core constructors

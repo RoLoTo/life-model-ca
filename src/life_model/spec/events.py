@@ -330,6 +330,10 @@ def _compile_one(builder: "_Builder", timing: EventTiming, event, year: int) -> 
         name = _name(event, f"{person.name} records Ontario tax facts")
         return [_life_event(year, name, event, _ontario_statement, person, event)]
 
+    if action == "charitable_gift":
+        name = _name(event, f"{person.name} gives to {event.charity}")
+        return [_life_event(year, name, event, _charitable_gift, person, event)]
+
     if isinstance(event, s.RegisteredCashEvent):
         movement = _life_event(
             year,
@@ -695,6 +699,24 @@ def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEven
         dividend.same_day_priority = -0.5
         return [dividend]
 
+    if isinstance(event, s.CorporateCharitableGiftEvent):
+
+        def give():
+            given = corp.make_charitable_gift(
+                on,
+                event.id,
+                event.amount,
+                event.charity,
+                redeem_investments=event.redeem_investments,
+                up_to_available=event.up_to_available,
+            )
+            if event.shareholder_pays_remainder and given < event.amount:
+                _give_personally(person, on, f"{event.id}-shareholder", event.amount - given, event.charity)
+
+        return [
+            _life_event(on.year, _name(event, f"{corp.name} gives to {event.charity}"), event, give, month=on.month)
+        ]
+
     refund_on = None
     defer_refund = False
     if isinstance(event, s.CorporatePayrollEvent):
@@ -881,6 +903,27 @@ def _compile_private_share_sale(builder: "_Builder", person, event: s.SellPrivat
     settlement = LifeEvent(due.year, f"Settle private share sale {event.id}", settle, month=due.month, day=due.day)
     settlement.same_day_priority = -1
     return [disposition, settlement]
+
+
+def _charitable_gift(person, event: s.CharitableGiftEvent) -> None:
+    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
+    _give_personally(person, date(event.at.year, event.at.month, event.at.day), event.id, event.amount, event.charity)
+
+
+def _give_personally(person, on: date, gift_id: str, amount: Decimal, charity: str) -> None:
+    """Pay a gift through the household waterfall and claim it on the donor's Ontario return."""
+    from ..ledger import FlowKind
+    from ..people.tax_unit import TaxUnit
+
+    policy = getattr(person.model, "income_tax_policy", None)
+    if policy is None or getattr(policy, "owner", None) is not person:
+        raise ValueError("Charitable gifts require the donor's Ontario return policy")
+    policy.record_donation(on, gift_id, amount)
+    cause = f"charitable gift {gift_id}"
+    unpaid = TaxUnit.for_member(person).pay_bills(
+        float(amount), kind=FlowKind.GIFT, sink=charity, cause=cause, dividend_on=on
+    )
+    person.add_debt(unpaid, cause=cause, kind=FlowKind.GIFT, sink=charity)
 
 
 def _ontario_statement(person, event: s.OntarioTaxStatementEvent) -> None:

@@ -1308,6 +1308,8 @@ class _Builder:
             corp.dividends_paid[fiscal_year] = spec.dividends_paid_ytd
         if spec.calendar_dividends_paid_ytd:
             corp.calendar_dividends_paid[self.model.start_year] = spec.calendar_dividends_paid_ytd
+        if spec.charitable_gifts_ytd:
+            corp.charitable_gifts[fiscal_year] = spec.charitable_gifts_ytd
         corp.dividend_refunds = {
             year: DividendRefund(facts.amount, facts.due) for year, facts in spec.dividend_refunds.items()
         }

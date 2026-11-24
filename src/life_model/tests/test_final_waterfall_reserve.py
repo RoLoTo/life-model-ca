@@ -1,5 +1,7 @@
 from decimal import Decimal as D
 
+import pytest
+
 from life_model.canada.retirement import evaluate_spending, search_spending
 from life_model.tests.test_canadian_pensions import pension_scenario
 from life_model.tests.test_corporate_spec import at
@@ -124,8 +126,6 @@ def test_ending_targets_keep_balances_in_named_sources():
     from life_model.canada.retirement import EndingTargets
 
     spec = household()
-    # The Ontario return has no brokerage gain support, so this case uses the Canadian sources only.
-    spec["people"][0]["accounts"] = [a for a in spec["people"][0]["accounts"] if a["kind"] != "brokerage"]
     base = search_spending(spec, person="owner", from_year=2027, upper_bound=100000)
     ending = EndingTargets(sources={"tax_free": D(2500), "corporate_dividend": D(10000), "bank": D(500)})
     kept = search_spending(spec, person="owner", from_year=2027, upper_bound=100000, ending=ending)
@@ -173,3 +173,33 @@ def test_ending_targets_reject_unknown_sources_and_debts():
         evaluate_spending(
             household(), person="owner", from_year=2027, annual_spending=0, ending=EndingTargets(debts={"car": D(1)})
         )
+
+
+def test_discounted_targets_protect_the_present_value_until_the_final_year():
+    from life_model.api import build
+    from life_model.canada.retirement import EndingTargets, fund_final_reserve
+
+    spec = household()
+    ending = EndingTargets(sources={"tax_free": D(2200)}, discount_pct={"tax_free": D(10)})
+    model = build(spec, seed=1, checks="strict", collect_data=False)
+    owner = model.household.people["owner"]
+    fund_final_reserve(model, person="owner", ending=ending, from_year=2027)
+    floors = {}
+    while not model.is_finished:
+        year = model.year
+        model.step()
+        floors.setdefault(year, owner.withdrawal_floors["tax_free"])
+    # The 2027 floor is CAD 2,200 discounted one year at 10%, plus the CAD 1 rounding margin.
+    assert floors == {2027: 2001.0, 2028: 2200.0}
+
+
+def test_discount_rates_need_a_non_bank_target():
+    from life_model.canada.retirement import EndingTargets
+
+    for ending in (
+        EndingTargets(sources={"bank": D(1)}, discount_pct={"bank": D(1)}),
+        EndingTargets(sources={"tax_free": D(1)}, discount_pct={"pretax": D(1)}),
+        EndingTargets(sources={"tax_free": D(1)}, discount_pct={"tax_free": D(-1)}),
+    ):
+        with pytest.raises(ValueError, match="discount rate"):
+            evaluate_spending(household(), person="owner", from_year=2027, annual_spending=0, ending=ending)

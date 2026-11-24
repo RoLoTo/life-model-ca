@@ -176,6 +176,7 @@ class _Extractor:
                     nerdtoh=corp.nerdtoh,
                     dividends_paid_ytd=corp.dividends_paid.get(fiscal_year, Decimal(0)),
                     calendar_dividends_paid_ytd=corp.calendar_dividends_paid.get(self.start, Decimal(0)),
+                    charitable_gifts_ytd=corp.charitable_gifts.get(fiscal_year, Decimal(0)),
                     dividend_refunds={
                         year: s.CorporateDividendRefundSpec(amount=claim.amount, due=claim.due)
                         for year, claim in corp.dividend_refunds.items()

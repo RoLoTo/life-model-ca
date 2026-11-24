@@ -1503,6 +1503,12 @@ class _SpecChecker:
                     and corp.investments is None
                 ):
                     self.error(path, "investment transfers require the corporation's interest-bearing account")
+                if (
+                    isinstance(event, s.CorporateCharitableGiftEvent)
+                    and event.shareholder_pays_remainder
+                    and self.spec.meta.ontario_retirement_tax is None
+                ):
+                    self.error(path, "personal gifts need the shareholder's Ontario return policy")
                 if isinstance(event, s.CorporatePayDividendEvent) and self.spec.meta.ontario_retirement_tax is None:
                     self.error(path, "corporate dividends need the shareholder's Ontario return policy")
                 if isinstance(event, s.CorporatePayrollEvent):
@@ -1563,6 +1569,8 @@ class _SpecChecker:
                     self.error(path, "private share sales need the owner's Ontario return policy")
             if isinstance(event, s.OntarioTaxStatementEvent) and self.spec.meta.ontario_retirement_tax is None:
                 self.error(path, "reported Ontario tax facts need the Ontario return policy")
+            if isinstance(event, s.CharitableGiftEvent) and self.spec.meta.ontario_retirement_tax is None:
+                self.error(path, "charitable gifts need the donor's Ontario return policy")
             if isinstance(event, s.RRSPContributeEvent):
                 self.check_rrsp_contribution(event, path, item_ids)
             if isinstance(event, s.ContributeEvent):

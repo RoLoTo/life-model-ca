@@ -10,6 +10,12 @@ _ZERO = D(0)
 # Employment Insurance Act, s. 145.
 _EI_REPAYMENT_RATE = D(".30")
 _EI_REPAYMENT_THRESHOLD_MULTIPLE = D("1.25")
+# Income Tax Act s. 118.1: the first $200 of gifts earns the lowest rate, the rest 29%, or 33% to the
+# extent of taxable income in the top bracket. Claims are limited to 75% of net income.
+_DONATION_LOW_TIER = D(200)
+_DONATION_INCOME_LIMIT = D(".75")
+# Taxation Act, 2007 (Ontario) s. 23: gifts above $200 earn the fixed 11.16% Ontario rate.
+_ONTARIO_DONATION_RATE = D(".1116")
 _HEALTH_PREMIUM = (
     (20000, 300, ".06"),
     (36000, 150, ".06"),
@@ -71,6 +77,7 @@ def income_tax(
     oas_benefits: Decimal = _ZERO,
     oas_threshold: Decimal | None = None,
     projected_rates: OntarioRates | None = None,
+    donations: Decimal = _ZERO,
 ) -> OntarioTax:
     """CAD estimate for the supported T1/ON428 income subset."""
     rates = ontario_rates(year) if projected_rates is None else projected_rates
@@ -78,6 +85,8 @@ def income_tax(
         raise ValueError("Invalid Ontario taxable income, pension income, age or RRSP deduction")
     if noneligible_dividends < 0:
         raise ValueError("Non-eligible dividends cannot be negative")
+    if donations < 0:
+        raise ValueError("Charitable gifts cannot be negative")
     taxable_dividends = taxable_noneligible_dividends(noneligible_dividends, year) if noneligible_dividends else _ZERO
     if min(cpp_retirement, oas_benefits) < 0 or (oas_threshold is not None and oas_threshold <= 0):
         raise ValueError("Invalid Canadian pension income or OAS recovery threshold")
@@ -91,6 +100,18 @@ def income_tax(
     oas_recovery = money(min(oas_benefits, max(_ZERO, income - threshold) * rates.oas_recovery_rate))
     income -= oas_recovery
     taxable = max(_ZERO, income - taxable_income_deduction)
+    claimed = min(donations, money(income * _DONATION_INCOME_LIMIT))
+    low_gifts = min(claimed, _DONATION_LOW_TIER)
+    high_gifts = claimed - low_gifts
+    top_threshold, second_rate = rates.federal_brackets[-2]
+    assert top_threshold is not None
+    top_gifts = min(high_gifts, max(_ZERO, taxable - top_threshold))
+    federal_donation_credit = (
+        low_gifts * rates.federal_brackets[0][1]
+        + top_gifts * rates.federal_brackets[-1][1]
+        + (high_gifts - top_gifts) * second_rate
+    )
+    ontario_donation_credit = low_gifts * rates.ontario_brackets[0][1] + high_gifts * _ONTARIO_DONATION_RATE
     basic_phaseout_start = rates.federal_brackets[2][0]
     basic_phaseout_end = rates.federal_brackets[3][0]
     assert basic_phaseout_start is not None and basic_phaseout_end is not None
@@ -118,8 +139,16 @@ def income_tax(
         rates.ontario_basic_amount + age_ontario + min(eligible_pension, rates.ontario_pension_limit) + payroll_credits
     ) * rates.ontario_brackets[0][1]
     federal_dividend_credit = money(taxable_dividends * rates.federal_noneligible_dividend_credit)
-    federal = max(_ZERO, bracket_tax(taxable, rates.federal_brackets) - federal_credits - federal_dividend_credit)
-    basic_province = max(_ZERO, bracket_tax(taxable, rates.ontario_brackets) - provincial_credits)
+    federal = max(
+        _ZERO,
+        bracket_tax(taxable, rates.federal_brackets)
+        - federal_credits
+        - federal_donation_credit
+        - federal_dividend_credit,
+    )
+    basic_province = max(
+        _ZERO, bracket_tax(taxable, rates.ontario_brackets) - provincial_credits - ontario_donation_credit
+    )
     surtax = sum(rate * max(_ZERO, basic_province - threshold) for threshold, rate in rates.ontario_surtax)
     provincial_dividend_credit = money(taxable_dividends * rates.ontario_noneligible_dividend_credit)
     # ON428 applies the dividend credit after surtax, before the Ontario tax reduction.

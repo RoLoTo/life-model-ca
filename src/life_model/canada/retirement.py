@@ -29,6 +29,8 @@ _CENT = D(".005")
 _FINAL_RESERVE_ROUNDS = 20
 # Extra cash drawn for the final reserve so cent rounding in the settled return cannot reopen the gap.
 _FINAL_RESERVE_MARGIN = D(1)
+# Added to a discounted ending floor so cent rounding in account growth still reaches the target.
+_DISCOUNTED_FLOOR_MARGIN = D(1)
 
 _DATED_SHORTFALLS = (
     BankFundingShortfall,
@@ -110,10 +112,15 @@ class EndingTargets:
     the ending cash reserve, and a corporation's target is its remaining dividend capacity. ``debts``
     maps debt ids to the amount that may remain owing: a mortgage uses its home's id, other debts their
     own id. Debts without an allowance must be repaid in full.
+
+    ``discount_pct`` gives an annual growth rate for non-bank sources. Before the final year, such a
+    source is protected at its target discounted at that rate to the end of the year, so growth on the
+    protected amount reaches the target. Sources without a rate are protected at the full target.
     """
 
     sources: Mapping[str, Decimal] = field(default_factory=dict)
     debts: Mapping[str, Decimal] = field(default_factory=dict)
+    discount_pct: Mapping[str, Decimal] = field(default_factory=dict)
 
 
 def _debt_id(agent) -> str:
@@ -181,18 +188,32 @@ def fund_final_reserve(
     and each source is drawn again until the larger tax is covered or the source reaches its target.
     From January of ``from_year``, non-bank ending targets are also floors for waterfall draws, capped
     registered withdrawals and capped dividends, so earlier spending does not use the kept balances.
+    Each January the floors are reset to the targets discounted by ``ending.discount_pct``.
     """
     ending = ending or EndingTargets()
     owner = model.household.people[person]
     end = date(model.end_year, 12, 31)
-    floors = {source: float(target) for source, target in ending.sources.items() if source != "bank" and target}
+    targets = {source: target for source, target in ending.sources.items() if source != "bank" and target}
 
-    def protect():
-        owner.withdrawal_floors = dict(floors)
+    def floor(source, target, year):
+        rate = ending.discount_pct.get(source, _ZERO)
+        if not rate or year == model.end_year:
+            return target
+        return min(target, target / (1 + rate / 100) ** (model.end_year - year) + _DISCOUNTED_FLOOR_MARGIN)
 
-    if floors:
+    def protect(year):
+        owner.withdrawal_floors = {
+            source: float(money(floor(source, target, year))) for source, target in targets.items()
+        }
+
+    if targets:
+        first = from_year or model.year
         LifeEvents(
-            model, [LifeEvent(from_year or model.year, "Protect ending targets", protect, stage="pre_step", month=1)]
+            model,
+            [
+                LifeEvent(year, "Protect ending targets", protect, year, stage="pre_step", month=1)
+                for year in range(first, model.end_year + 1)
+            ],
         )
 
     def draw():
@@ -232,9 +253,14 @@ def _check_targets(spec, ending: EndingTargets) -> EndingTargets:
                 raise ValueError(f"Ending {name} target for {key!r} must be a nonnegative amount")
             if name == "source" and key not in order:
                 raise ValueError(f"Ending target names {key!r}, which is not in the withdrawal order")
+    for key, value in ending.discount_pct.items():
+        value = D(str(value))
+        if key == "bank" or key not in ending.sources or not value.is_finite() or value < 0:
+            raise ValueError(f"Ending discount rate for {key!r} needs a non-bank target and a nonnegative rate")
     return EndingTargets(
         {key: money(D(str(value))) for key, value in ending.sources.items()},
         {key: money(D(str(value))) for key, value in ending.debts.items()},
+        {key: D(str(value)) for key, value in ending.discount_pct.items()},
     )
 
 

@@ -19,6 +19,7 @@ from .tax import TaxesDue
 
 D = Decimal
 _ZERO = D(0)
+_CAPITAL_GAIN_TYPES = (IncomeType.SHORT_TERM_CAPITAL_GAIN, IncomeType.LONG_TERM_CAPITAL_GAIN)
 
 
 def cash_reserve_for_owner(owner) -> Decimal:
@@ -45,6 +46,7 @@ class OntarioTaxInputs:
     oas_benefits: Decimal = _ZERO
     oas_threshold: Decimal | None = None
     projected_rates: OntarioRates | None = None
+    donations: Decimal = _ZERO
 
     def calculate(self, rrsp_deduction: Decimal) -> OntarioTax:
         return income_tax(
@@ -63,6 +65,7 @@ class OntarioTaxInputs:
             oas_benefits=self.oas_benefits,
             oas_threshold=self.oas_threshold,
             projected_rates=self.projected_rates,
+            donations=self.donations,
         )
 
 
@@ -149,6 +152,7 @@ class OntarioRetirementPolicy:
         self.rentals: dict[tuple[int, str], tuple[Decimal, Decimal, Decimal]] = {}
         self.rental_sales: dict[tuple[int, str], Decimal] = {}
         self.pensions: dict[tuple[int, str], tuple[str, Decimal, Decimal]] = {}
+        self.donations: dict[tuple[int, str], Decimal] = {}
         if freeze_2026 and freeze_after is not None:
             raise ValueError("Use either freeze_2026 or freeze_after")
         if indexation is not None and (freeze_2026 or freeze_after is not None):
@@ -244,6 +248,7 @@ class OntarioRetirementPolicy:
                 self.pensions,
                 self.rentals,
                 self.rental_sales,
+                self.donations,
             )
         ):
             raise ValueError(f"Duplicate Ontario tax event: {event_id}")
@@ -289,6 +294,11 @@ class OntarioRetirementPolicy:
             raise ValueError("Invalid CPP or OAS gross payment or withholding")
         self.pensions[self.validate_event(when, event_id)] = kind, gross, withheld
 
+    def record_donation(self, when: date, event_id: str, amount: Decimal) -> None:
+        if amount <= 0:
+            raise ValueError("A charitable gift must be positive")
+        self.donations[self.validate_event(when, event_id)] = amount
+
     def prepare_rrsp_deduction(self, when: date, year: int, amount: Decimal, room) -> tuple[Decimal, OntarioTax | None]:
         check_deduction_date(when, year)
         if year not in self.settlement_dates:
@@ -323,6 +333,8 @@ class OntarioRetirementPolicy:
         benefits = [item.ei_benefits for item in statements if item.ei_benefits is not None]
         gains = sum((sale.gain for sale in sales), D(0))
         gains += sum((gain for (y, _), gain in self.rental_sales.items() if y == year), D(0))
+        if year == self.owner.model.year:
+            gains += self.brokerage_gains()
         fx_pool = self.foreign_cash_pool
         if fx_pool is not None:
             gains += fx_pool.reportable(year)
@@ -384,7 +396,23 @@ class OntarioRetirementPolicy:
             )
         if self.rrsp_deductions.get(year):
             facts["rrsp_deduction"] = self.rrsp_deductions[year]
+        donations = sum((amount for (y, _), amount in self.donations.items() if y == year), D(0))
+        if donations:
+            facts["donations"] = donations
         return facts
+
+    def brokerage_gains(self) -> Decimal:
+        """Net brokerage capital gain recorded so far this year; short- and long-term sales are both capital."""
+        return money(
+            sum(
+                (
+                    D(str(entry.amount))
+                    for entry in self.owner.income.entries
+                    if entry.income_type in _CAPITAL_GAIN_TYPES and entry.source == "brokerage_sale"
+                ),
+                D(0),
+            )
+        )
 
     def taxable_income_to_date(self) -> Decimal:
         """Taxable income on the owner's current-year return from the income recorded so far."""
@@ -413,6 +441,9 @@ class OntarioRetirementPolicy:
             if not entry.amount:
                 continue
             source = entry.source or ""
+            if entry.income_type in _CAPITAL_GAIN_TYPES and source == "brokerage_sale":
+                # Included through working_income with the year's other capital gains and losses.
+                continue
             if entry.income_type == IncomeType.PRETAX_DISTRIBUTION and source.startswith(("RRSP ", "RRIF ")):
                 if age >= 65 and source.startswith("RRIF "):
                     eligible += D(str(entry.amount))
@@ -446,6 +477,7 @@ class OntarioRetirementPolicy:
             oas_benefits=facts.get("oas_benefits", D(0)),
             oas_threshold=self.oas_recovery_thresholds.get(year),
             projected_rates=self.income_tax_rates(year),
+            donations=facts.get("donations", D(0)),
         )
 
     def __call__(self, unit, **additional) -> TaxesDue:

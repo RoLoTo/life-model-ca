@@ -35,7 +35,7 @@ error: put what already happened into the starting state (for example a marriage
 
 ## Event actions
 
-`marry`, `divorce`, `retire`, `change_job`, `move`, `buy_home`, `sell_home`, `convert_home_to_ontario_rental`, `record_home_valuation`, `one_time_expense`, `recurring_expense`, `change_spending`, `add_account`, `reserve_cash`, `contribute`, `rrsp_contribute`, `withdraw_registered`, `rrsp_to_rrif`, `ontario_tax_statement`, `corporate_operating_cash`, `corporate_investment_transfer`, `corporate_payroll`, `corporate_pay_dividend`, `corporate_income_tax`, `sell_private_shares`, `exercise_private_options`, `convert_currency`, `move_foreign_cash`, `stop_contribution`, `change_contribution`, `convert_to_roth`, `claim_social_security`, `die`, `refinance`, `renew_mortgage`, `pay_mortgage_at_maturity`, `prepay_mortgage`, `heloc_draw`, `draw_bridge`, `repay_bridge`, `disability`.
+`marry`, `divorce`, `retire`, `change_job`, `move`, `buy_home`, `sell_home`, `convert_home_to_ontario_rental`, `record_home_valuation`, `one_time_expense`, `recurring_expense`, `change_spending`, `add_account`, `reserve_cash`, `contribute`, `rrsp_contribute`, `withdraw_registered`, `rrsp_to_rrif`, `ontario_tax_statement`, `charitable_gift`, `corporate_operating_cash`, `corporate_investment_transfer`, `corporate_payroll`, `corporate_pay_dividend`, `corporate_charitable_gift`, `corporate_income_tax`, `sell_private_shares`, `exercise_private_options`, `convert_currency`, `move_foreign_cash`, `stop_contribution`, `change_contribution`, `convert_to_roth`, `claim_social_security`, `die`, `refinance`, `renew_mortgage`, `pay_mortgage_at_maturity`, `prepay_mortgage`, `heloc_draw`, `draw_bridge`, `repay_bridge`, `disability`.
 
 ## HouseholdSpec
 
@@ -50,7 +50,7 @@ A complete household: metadata, optional economy overrides, people, relationship
 | `corporations` | list[[CorporationSpec](#corporationspec)] |  | [] |  | Wholly owned Canadian corporations with separate assets and obligations. |
 | `relationships` | [Relationships](#relationships) |  | {} |  | Marriages. |
 | `withdrawal_order` | list[`"bank"` \\| `"fixed_income"` \\| `"brokerage"` \\| `"roth_basis"` \\| `"pretax"` \\| `"roth_earnings"` \\| `"reserve"` \\| `"tax_free"` \\| `"corporate_dividend"`] (optional) |  | — | `Family.withdrawal_order` | Household payment waterfall: the order sources are drawn to pay bills and taxes, across every member. Each source exactly once, starting with 'bank'. Defaults to bank, fixed_income, brokerage, roth_basis, pretax, roth_earnings, reserve (fixed_income and reserve may be left out: they then take those places). Canadian forecasts may add corporate_dividend to cover monthly bills and dated Ontario tax payments using corporations with shortfall_dividends_from set. |
-| `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [ConvertHomeToOntarioRentalEvent](#converthometoontariorentalevent), [HomeValuationEvent](#homevaluationevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [RRSPContributeEvent](#rrspcontributeevent), [WithdrawRegisteredEvent](#withdrawregisteredevent), [RRSPToRRIFEvent](#rrsptorrifevent), [OntarioTaxStatementEvent](#ontariotaxstatementevent), [CorporateOperatingCashEvent](#corporateoperatingcashevent), [CorporateInvestmentTransferEvent](#corporateinvestmenttransferevent), [CorporatePayrollEvent](#corporatepayrollevent), [CorporatePayDividendEvent](#corporatepaydividendevent), [CorporateIncomeTaxEvent](#corporateincometaxevent), [SellPrivateSharesEvent](#sellprivatesharesevent), [ExercisePrivateOptionsEvent](#exerciseprivateoptionsevent), [ConvertCurrencyEvent](#convertcurrencyevent), [MoveForeignCashEvent](#moveforeigncashevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
+| `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [ConvertHomeToOntarioRentalEvent](#converthometoontariorentalevent), [HomeValuationEvent](#homevaluationevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [RRSPContributeEvent](#rrspcontributeevent), [WithdrawRegisteredEvent](#withdrawregisteredevent), [RRSPToRRIFEvent](#rrsptorrifevent), [OntarioTaxStatementEvent](#ontariotaxstatementevent), [CharitableGiftEvent](#charitablegiftevent), [CorporateOperatingCashEvent](#corporateoperatingcashevent), [CorporateInvestmentTransferEvent](#corporateinvestmenttransferevent), [CorporatePayrollEvent](#corporatepayrollevent), [CorporatePayDividendEvent](#corporatepaydividendevent), [CorporateCharitableGiftEvent](#corporatecharitablegiftevent), [CorporateIncomeTaxEvent](#corporateincometaxevent), [SellPrivateSharesEvent](#sellprivatesharesevent), [ExercisePrivateOptionsEvent](#exerciseprivateoptionsevent), [ConvertCurrencyEvent](#convertcurrencyevent), [MoveForeignCashEvent](#moveforeigncashevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
 | `actuals` | map[integer → [ActualRecords](#actualrecords)] (optional) |  | — |  | What the household's real documents say, by tax year (filed 1040 lines, W-2s, 1099s, statement balances): read by 'life-model reconcile' and the backtest, ignored by the builder. Keep real documents in my-models/ (git-ignored). |
 
 ## Meta
@@ -1268,6 +1268,7 @@ Builds: `Corporation`.
 | `nerdtoh` | Decimal | CAD | `0` |  | Opening non-eligible refundable dividend tax on hand. |
 | `dividends_paid_ytd` | Decimal | CAD | `0` |  | Qualifying non-eligible dividends already paid in the opening fiscal year. |
 | `calendar_dividends_paid_ytd` | Decimal | CAD | `0` |  | Dividends paid in the opening calendar year before the run. |
+| `charitable_gifts_ytd` | Decimal | CAD | `0` |  | Charitable gifts already paid in the opening fiscal year. |
 | `dividend_refunds` | map[integer → [CorporateDividendRefundSpec](#corporatedividendrefundspec)] |  | {} |  | Outstanding corporate dividend refunds keyed by fiscal closing year. |
 | `operating_balances` | map[string → [CorporateOperatingBalance](#corporateoperatingbalance)] |  | {} |  | Unsettled operating receivables and payables keyed by reference. |
 | `payables` | map[string → [CorporatePayableSpec](#corporatepayablespec)] |  | {} |  | Opening unpaid obligations keyed by reference. |
@@ -1729,6 +1730,21 @@ Option tax amounts recorded after the exercise has been accounted for separately
 | `deduction` | Decimal | CAD | **required** |  | Applicable security option deduction. |
 | `withheld` | Decimal | CAD | **required** |  | Income tax withheld on exercise, excluding CPP. |
 
+## CharitableGiftEvent
+
+Pay a cash gift to a registered charity through the household waterfall and claim it on the Ontario return.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique id of the gift on the owner's return. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"charitable_gift"` |  | **required** |  |  |
+| `amount` | Decimal | CAD | **required** |  | Cash gift claimed in the calendar year paid. |
+| `charity` | string |  | `"Registered charity"` |  | Recipient shown in the ledger. |
+
 ## CorporateOperatingCashEvent
 
 Recognize business revenue or a deductible operating expense and date its cash movement.
@@ -1797,6 +1813,25 @@ Pay a non-eligible Canadian dividend to the corporation's resident shareholder.
 | `redeem_investments` | boolean |  | `False` |  | Allow redemption of corporate interest-bearing deposits. |
 | `year_to_date_target` | boolean |  | `False` |  | Pay only the amount still needed to reach the calendar-year dividend target. |
 | `taxable_income_target` | Decimal (optional) | CAD | — |  | Limit the dividend to the grossed-up amount that raises the shareholder's taxable income for the calendar year to this level, using income recorded to the payment date. |
+
+## CorporateCharitableGiftEvent
+
+Pay a cash gift to a registered charity, deducted from the fiscal year's corporate taxable income.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string |  | **required** |  | Unique corporate event reference. |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `corporation` | string |  | **required** |  | Corporation id. Set person to its shareholder. |
+| `action` | `"corporate_charitable_gift"` |  | **required** |  |  |
+| `amount` | Decimal | CAD | **required** |  | Cash gift. |
+| `charity` | string |  | `"Registered charity"` |  | Recipient shown in the ledger. |
+| `redeem_investments` | boolean |  | `False` |  | Allow redemption of corporate interest-bearing deposits. |
+| `up_to_available` | boolean |  | `False` |  | Cap the gift at liquid corporate assets after known payables, tax on interest to date and any protected ending dividend capacity. |
+| `shareholder_pays_remainder` | boolean |  | `False` |  | The shareholder gives any capped remainder personally, claimed on their Ontario return. |
 
 ## CorporateIncomeTaxEvent
 

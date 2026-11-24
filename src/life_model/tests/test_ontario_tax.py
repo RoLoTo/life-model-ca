@@ -101,6 +101,32 @@ class OntarioTaxTests(unittest.TestCase):
             self.assertEqual(returns[0]["total"], "3055.78")
             self.assertEqual(returns[0]["outstanding"], "1555.78")
 
+    def test_brokerage_sales_are_half_included_capital_gains(self):
+        spec = scenario()
+        p = spec["people"][0]
+        lots = [
+            {"value": 10000, "cost_basis": 4000, "acquired_year": 2020},
+            {"value": 3000, "cost_basis": 5000, "acquired_month": 1},
+        ]
+        p["accounts"].append({"kind": "brokerage", "lots": lots, "growth_pct": 0, "dividend_yield_pct": 0})
+        spec["events"] = [
+            {
+                "at": {"year": 2026, "month": 6, "day": 1},
+                "person": "owner",
+                "action": "one_time_expense",
+                "amount": 13000,
+            }
+        ]
+        spec["meta"]["accepted_warnings"].append("fixed_growth")
+        model = build(spec, checks="strict", collect="month", seed=1)
+        while model.year == 2026:
+            model.step()
+        tax_return = model.income_tax_policy.returns[2026]
+        # A $6,000 long-term gain less a $2,000 short-term loss, half included.
+        self.assertEqual(tax_return.working_income["net_capital_gain"], D(4000))
+        self.assertEqual(tax_return.working_income["included_capital_gain"], D(2000))
+        self.assertEqual(tax_return.tax.income, D(2000))
+
     def test_refund_waits_for_explicit_settlement_date(self):
         spec = scenario()
         spec["meta"]["ontario_retirement_tax"]["settlement_dates"][2026] = "2027-05-15"
