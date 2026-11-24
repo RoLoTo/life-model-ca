@@ -13,13 +13,21 @@ from ..debt.bridge import BridgeRepaymentShortfall
 from ..housing.closing import ClosingShortfall
 from ..housing.home import MortgagePayoffShortfall
 from ..ledger import household_balance_sheet
+from ..lifeevents import LifeEvent, LifeEvents
 from ..model import EventKind
+from ..people.tax_unit import TaxUnit
 from ..spec.schema import At, OneTimeExpenseEvent
 from ..tax.ontario import money
-from .corporation import CorporateCashShortfall
+from ..tax.ontario_policy import cash_reserve_for_owner
+from .corporation import CorporateCashShortfall, Corporation
 
 D = Decimal
 _ZERO = D(0)
+_CENT = D(".005")
+# Taxable draws raise the final return; repeat a source until its own tax is covered.
+_FINAL_RESERVE_ROUNDS = 20
+# Extra cash drawn for the final reserve so cent rounding in the settled return cannot reopen the gap.
+_FINAL_RESERVE_MARGIN = D(1)
 
 _DATED_SHORTFALLS = (
     BankFundingShortfall,
@@ -45,11 +53,12 @@ class SpendingTrial:
     annual_spending: Decimal
     gap: SpendingGap | None
     ending_bank_cash: Decimal | None = None
-    ending_tax_free: Decimal | None = None
     reserve_for_unpaid_tax: Decimal | None = None
     cash_after_tax_reserve: Decimal | None = None
     ending_mortgage_principal: Decimal | None = None
     ending_consolidated_net_worth: Decimal | None = None
+    #: What each ``withdrawal_order`` source still holds after the final reserve is funded.
+    ending_sources: dict[str, Decimal] | None = None
 
 
 @dataclass(frozen=True)
@@ -88,10 +97,65 @@ def _dated_gap(error: ValueError, model) -> SpendingGap:
     return SpendingGap(type(error).__name__, when.isoformat() if when else month, money(D(str(error.amount))))
 
 
+def _final_reserve_need(owner, cash_reserve: Decimal) -> Decimal:
+    """Cash still needed for outstanding and projected personal tax plus the ending reserve."""
+    return cash_reserve_for_owner(owner) + cash_reserve + _FINAL_RESERVE_MARGIN - D(str(owner.usable_bank_balance))
+
+
+def fund_final_reserve(model, *, person: str, cash_reserve: Decimal = _ZERO) -> None:
+    """Schedule a final-December draw through the household waterfall for the horizon's tax and reserve.
+
+    Every non-bank source in ``withdrawal_order`` is drawn in turn, after the month's bills and before
+    the year's tax settlement. Taxable draws are added to the final return, and each source is drawn
+    again until the larger tax is covered or the source is exhausted.
+    """
+    owner = model.household.people[person]
+    end = date(model.end_year, 12, 31)
+
+    def draw():
+        unit = TaxUnit.for_member(owner)
+        with model.ledger.caused_by("fund the final tax reserve"):
+            for source in unit.withdrawal_order[1:]:
+                for round_number in range(_FINAL_RESERVE_ROUNDS):
+                    need = _final_reserve_need(owner, cash_reserve)
+                    if need < _CENT:
+                        break
+                    # Each round is a separate payment, so a repeated corporate dividend has its own reference.
+                    reference = f"final-reserve-{round_number + 1}"
+                    if unit._raise_cash(source, float(need), dividend_on=end, reference=reference) < 0.005:
+                        break
+
+    LifeEvents(
+        model, [LifeEvent(model.end_year, "Fund the final tax reserve", draw, stage="post_step", month=12, day=31)]
+    )
+
+
+def ending_sources(model, *, person: str) -> dict[str, Decimal]:
+    """Balances left in each ``withdrawal_order`` source; corporations report dividend capacity."""
+    owner = model.household.people[person]
+    unit = TaxUnit.for_member(owner)
+    end = date(model.end_year, 12, 31)
+    balances = {}
+    for source in unit.withdrawal_order:
+        if source == "bank":
+            amount = owner.usable_bank_balance
+        elif source == "corporate_dividend":
+            amount = sum(
+                corp.dividend_capacity(end)
+                for corp in model.agents
+                if isinstance(corp, Corporation) and corp.shareholder is owner and corp.allows_shortfall_dividends(end)
+            )
+        else:
+            amount = sum(unit._source_balance(member, source) for member in unit.members)
+        balances[source] = money(D(str(amount)))
+    return balances
+
+
 def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed) -> SpendingTrial:
     case = _with_budget(spec, person, from_year, spending, index_pct)
     model = build(case, seed=seed, checks="strict", collect_data=False)
     owner = model.household.people[person]
+    fund_final_reserve(model, person=person, cash_reserve=cash_reserve)
     try:
         while not model.is_finished:
             year, month = model.year, model.month
@@ -113,18 +177,23 @@ def _evaluate(spec, person, from_year, spending, index_pct, cash_reserve, seed) 
 
     end = date(model.end_year, 12, 31)
     bank = money(D(str(owner.usable_bank_balance)))
-    # A TFSA withdrawal has no tax effect, so it can fund the reserve as it funds bills.
-    tax_free = money(D(str(sum(account.balance for account in owner.tfsas))))
     returns = model.income_tax_policy.tax_settlements()
     unpaid_tax = sum((max(D(0), tax.balance - tax.amount_settled) for tax in returns), D(0))
-    available = bank + tax_free - unpaid_tax
+    available = bank - unpaid_tax
     gap = None
     if available < cash_reserve:
         gap = SpendingGap("ending_cash_reserve", end.isoformat(), cash_reserve - available)
     mortgage = sum(home.mortgage.principal for home in owner.homes if home.mortgage is not None and not home.sold)
     net_worth = household_balance_sheet(model).net_worth
     return SpendingTrial(
-        spending, gap, bank, tax_free, unpaid_tax, available, money(D(str(mortgage))), money(D(str(net_worth)))
+        spending,
+        gap,
+        bank,
+        unpaid_tax,
+        available,
+        money(D(str(mortgage))),
+        money(D(str(net_worth))),
+        ending_sources(model, person=person),
     )
 
 

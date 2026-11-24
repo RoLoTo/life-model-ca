@@ -310,6 +310,16 @@ class Corporation(LifeModelAgent):
             policy.record_payroll(pay, payday, key)
         return key
 
+    def dividend_capacity(self, on: date, *, redeem_investments: bool = True) -> Decimal:
+        """Liquid assets available for a dividend after known payables and tax on interest to date."""
+        year = self.fiscal_year(on)
+        invested = self.investments.value if redeem_investments and self.investments is not None else Decimal(0)
+        interest = self.investment_interest.get(year, Decimal(0))
+        projected_tax = Decimal(0)
+        if f"income-tax:{year}" not in self.payables:
+            projected_tax = ontario_ccpc_interest_tax(interest, self.operating_profit.get(year, Decimal(0))).total
+        return max(Decimal(0), self.cash + invested - self.cash_obligations() - projected_tax)
+
     def pay_dividend(
         self,
         recipient,
@@ -329,12 +339,7 @@ class Corporation(LifeModelAgent):
         policy.validate_event(on, event_id)
         year = self.fiscal_year(on)
         if up_to_available:
-            invested = self.investments.value if redeem_investments and self.investments is not None else Decimal(0)
-            interest = self.investment_interest.get(year, Decimal(0))
-            projected_tax = Decimal(0)
-            if f"income-tax:{year}" not in self.payables:
-                projected_tax = ontario_ccpc_interest_tax(interest, self.operating_profit.get(year, Decimal(0))).total
-            amount = min(amount, max(Decimal(0), self.cash + invested - self.cash_obligations() - projected_tax))
+            amount = min(amount, self.dividend_capacity(on, redeem_investments=redeem_investments))
         if not amount:
             return Decimal(0)
         if redeem_investments:

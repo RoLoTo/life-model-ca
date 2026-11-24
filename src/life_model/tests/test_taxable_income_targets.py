@@ -2,7 +2,6 @@ from decimal import Decimal as D
 
 import pytest
 
-from life_model.canada.retirement import evaluate_spending
 from life_model.checks import assert_conservation
 from life_model.tests.test_canadian_pensions import pension_scenario
 from life_model.tests.test_corporate_spec import at, build
@@ -141,25 +140,3 @@ def test_tfsa_withdrawals_reject_a_taxable_income_target():
     )
     with pytest.raises(ValueError, match="TFSA withdrawals have no withholding or taxable annual target"):
         build(spec)
-
-
-def test_ending_reserve_counts_tax_free_savings():
-    spec = pension_scenario("2027-01", "1967-01", 60)
-    spec["meta"]["end_year"] = 2027
-    owner = spec["people"][0]
-    owner["tfsa_room"] = {"available": 0, "annual_limits": {}}
-    owner["accounts"][0]["balance"] = 24000
-    owner["accounts"].append({"kind": "tfsa", "id": "tfsa", "balance": 10000, "growth_pct": 0})
-    spec["events"] = [
-        {
-            "action": "ontario_tax_statement",
-            "id": "interest",
-            "person": "owner",
-            "at": at(2027, 12, 31),
-            "taxable_interest": 30000,
-        }
-    ]
-    trial = evaluate_spending(spec, person="owner", from_year=2027, annual_spending=20000)
-    assert (trial.ending_bank_cash, trial.ending_tax_free) == (D(4000), D(10000))
-    assert trial.cash_after_tax_reserve == 14000 - trial.reserve_for_unpaid_tax
-    assert trial.gap is None
