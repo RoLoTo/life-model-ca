@@ -1783,7 +1783,20 @@ class CanadianRRSPRoom(SpecModel):
         default_factory=dict, description="New room to add at the start of each future calendar year.", unit="CAD"
     )
     deduction_limits: dict[Year, CashAmount] = spec_field(
-        description="Deduction limit available for the new claims modeled for each tax year.", unit="CAD"
+        default_factory=dict,
+        description="Deduction limit available for the new claims modeled for each tax year.",
+        unit="CAD",
+    )
+    annual_dollar_limits: dict[Year, CashAmount] = spec_field(
+        default_factory=dict,
+        description="Annual RRSP dollar limits by calendar year for dynamic earned-income room accrual "
+        "(18% of prior-year salary, option benefit and net rental income or loss, less pension adjustment).",
+        unit="CAD",
+    )
+    pension_adjustments: dict[Year, CashAmount] = spec_field(
+        default_factory=dict,
+        description="Annual pension adjustment keyed by the earned-income year, reducing next year's room.",
+        unit="CAD",
     )
 
 
@@ -3960,7 +3973,19 @@ class RRSPContributeEvent(EventBase):
     pool_cash: bool = spec_field(False, description="Top up from the same owner's other available CAD banks.")
     bank: Identifier = spec_field(description="Id of the owner's available bank account.")
     account: Identifier = spec_field(description="Id of the owner's RRSP.")
-    amount: CashAmount = spec_field(description="Exact cash contribution and deduction amount.", unit="CAD", gt=0)
+    amount: CashAmount | None = spec_field(
+        None,
+        description="Exact cash contribution and deduction amount. Mutually exclusive with room_fraction.",
+        unit="CAD",
+        gt=0,
+    )
+    room_fraction: Decimal | None = spec_field(
+        None,
+        description="Fraction (0 to 1] of remaining eligible RRSP deduction room to contribute. Mutually exclusive "
+        "with amount; skips cleanly when remaining room is zero.",
+        gt=0,
+        le=1,
+    )
     deduction_year: Year = spec_field(
         description="Contribution year or eligible preceding tax year. Start the run by that tax year."
     )
@@ -3969,6 +3994,8 @@ class RRSPContributeEvent(EventBase):
     def check_cash_date(self) -> "RRSPContributeEvent":
         from ..tax.rrsp import check_deduction_date
 
+        if (self.amount is None) == (self.room_fraction is None):
+            raise ValueError("rrsp_contribute requires exactly one of amount or room_fraction")
         if self.at.day is None or self.at.year is None or self.at.month is None:
             raise ValueError("rrsp_contribute requires an explicit cash payment date")
         check_deduction_date(date(self.at.year, self.at.month, self.at.day), self.deduction_year)
@@ -4196,6 +4223,13 @@ class MortgagePrepaymentEvent(EventBase):
 
     reserve_ontario_tax: bool = spec_field(
         False, description="Protect unpaid and estimated Ontario income tax in addition to the cash floor."
+    )
+    reserve_rrsp_fraction: Decimal | None = spec_field(
+        None,
+        description="Protect this fraction (0 to 1] of the current year's remaining eligible RRSP room in addition "
+        "to the cash floor.",
+        ge=0,
+        le=1,
     )
 
     @model_validator(mode="after")

@@ -251,22 +251,92 @@ class RRSPContributionRoom(LifeModelAgent):
         owner,
         *,
         available: Decimal,
-        annual_additions: Mapping[int, Decimal],
-        deduction_limits: Mapping[int, Decimal],
+        annual_additions: Mapping[int, Decimal] = (),
+        deduction_limits: Mapping[int, Decimal] = (),
+        annual_dollar_limits: Mapping[int, Decimal] = (),
+        pension_adjustments: Mapping[int, Decimal] = (),
     ):
-        amounts = (available, *annual_additions.values(), *deduction_limits.values())
+        additions = dict(annual_additions)
+        limits = dict(deduction_limits)
+        dollar_limits = dict(annual_dollar_limits)
+        adjustments = dict(pension_adjustments)
+        amounts = (available, *additions.values(), *limits.values(), *dollar_limits.values(), *adjustments.values())
         if any(not amount.is_finite() or amount < 0 or amount != cents(amount) for amount in amounts):
-            raise ValueError("RRSP room, additions and deduction limits must be nonnegative whole-cent amounts")
+            raise ValueError(
+                "RRSP room, additions, limits and pension adjustments must be nonnegative whole-cent amounts"
+            )
         super().__init__(owner.model)
         self.owner = owner
         self.available = available
-        self.annual_additions = dict(annual_additions)
-        self.deduction_limits = dict(deduction_limits)
+        self.annual_additions = additions
+        self.deduction_limits = limits
+        self.annual_dollar_limits = dollar_limits
+        self.pension_adjustments = adjustments
+        self.computed_additions: dict[int, Decimal] = {}
         self.opening_by_year: dict[int, Decimal] = {}
+
+    def earned_income_addition(self, year: int) -> Decimal:
+        """New RRSP room added on January 1 of ``year`` from explicit additions or prior-year earned income."""
+        if year in self.annual_additions:
+            return self.annual_additions[year]
+        if year in self.computed_additions:
+            return self.computed_additions[year]
+        if year not in self.annual_dollar_limits:
+            return D(0)
+        policy = getattr(self.model, "income_tax_policy", None)
+        prior_year = year - 1
+        if policy is None or prior_year not in policy.returns:
+            raise ValueError(f"RRSP room for {year} requires settled {prior_year} Ontario earned income")
+        facts = policy.returns[prior_year].working_income
+        # ITA s. 146(1) earned income: employment, taxable option benefits and net rental profit or loss.
+        earned = facts.get("salary", D(0)) + facts.get("option_benefit", D(0)) + facts.get("rental_net_income", D(0))
+        raw = max(D(0), cents(earned * D(".18")))
+        pa = self.pension_adjustments.get(prior_year, D(0))
+        addition = max(D(0), min(self.annual_dollar_limits[year], raw) - pa)
+        self.computed_additions[year] = addition
+        return addition
+
+    def deduction_limit_for(self, year: int, policy=None) -> Decimal | None:
+        """Total RRSP deduction limit available for ``year``, combining carryforward and annual additions."""
+        if year in self.deduction_limits:
+            return self.deduction_limits[year]
+        if not self.annual_dollar_limits:
+            return None
+        start = self.model.start_year
+        if year < start:
+            return None
+        base = self.deduction_limits.get(start, self.opening_by_year.get(start, self.available))
+        if year == start:
+            return base
+        if policy is None:
+            policy = getattr(self.model, "income_tax_policy", None)
+        deductions = policy.rrsp_deductions if policy is not None else {}
+        limit = base
+        for target in range(start + 1, year + 1):
+            if target in self.deduction_limits:
+                limit = self.deduction_limits[target]
+            else:
+                limit = max(D(0), limit - deductions.get(target - 1, D(0))) + self.earned_income_addition(target)
+        return limit
+
+    def planned_contribution(self, deduction_year: int, fraction: Decimal, policy=None) -> Decimal:
+        """Whole-cent contribution for ``deduction_year`` sized as ``fraction`` of remaining eligible room."""
+        if not fraction.is_finite() or not 0 <= fraction <= 1:
+            raise ValueError("RRSP contribution room_fraction must be between 0 and 1")
+        if not fraction:
+            return D(0)
+        if policy is None:
+            policy = getattr(self.model, "income_tax_policy", None)
+        limit = self.deduction_limit_for(deduction_year, policy)
+        if limit is None:
+            raise ValueError(f"No RRSP deduction limit is available for {deduction_year}")
+        already = policy.rrsp_deductions.get(deduction_year, D(0)) if policy is not None else D(0)
+        remaining = max(D(0), min(self.available, limit - already))
+        return cents(remaining * fraction)
 
     def on_year_start(self):
         if self.model.year > self.model.start_year:
-            self.available += self.annual_additions.get(self.model.year, D(0))
+            self.available += self.earned_income_addition(self.model.year)
         self.opening_by_year[self.model.year] = self.available
 
 
@@ -335,9 +405,18 @@ class CanadianRetirementAccount(TaxAdvantagedAccount):
         return float(self.room.available) if self.room is not None and self.kind == "RRSP" else 0.0
 
     def contribute_from(
-        self, bank, amount: Decimal, when: date, *, deduction_year: int, pool_cash: bool = False
-    ) -> None:
-        """Transfer an exact cash amount and record its elected deduction in the Ontario return."""
+        self,
+        bank,
+        amount: Decimal | None,
+        when: date,
+        *,
+        deduction_year: int,
+        pool_cash: bool = False,
+        room_fraction: Decimal | None = None,
+    ) -> Decimal:
+        """Transfer cash and record its elected deduction in the Ontario return."""
+        if (amount is None) == (room_fraction is None):
+            raise ValueError("Supply either an explicit RRSP contribution amount or room_fraction")
         if bank.owner is not self.owner or bank not in self.owner.usable_bank_accounts or bank.reserve:
             raise ValueError("RRSP contributions require the owner's available bank cash")
         if (when.year, when.month) != (self.model.year, self.model.month):
@@ -349,15 +428,23 @@ class CanadianRetirementAccount(TaxAdvantagedAccount):
             or when.year > self.owner_birth.year + 71
         ):
             raise ValueError("The contribution needs an eligible RRSP with owner-level room")
+        policy = getattr(self.model, "income_tax_policy", None)
+        if policy is None or getattr(policy, "owner", None) is not self.owner:
+            raise ValueError("RRSP deductions require the owner's Ontario return policy")
+        if room_fraction is not None:
+            from ..tax.rrsp import check_deduction_date
+
+            check_deduction_date(when, deduction_year)
+            amount = self.room.planned_contribution(deduction_year, room_fraction, policy)
+            if not amount:
+                return D(0)
+        assert amount is not None
         if not amount.is_finite() or amount <= 0 or amount != cents(amount):
             raise ValueError("The contribution must be a positive whole-cent amount")
         if amount > self.room.available:
             raise ValueError("The RRSP contribution exceeds the owner's available contribution room")
         if not pool_cash and amount > D(str(bank.balance)):
             raise ValueError("Insufficient settled cash for the RRSP contribution")
-        policy = getattr(self.model, "income_tax_policy", None)
-        if policy is None or getattr(policy, "owner", None) is not self.owner:
-            raise ValueError("RRSP deductions require the owner's Ontario return policy")
         deduction, revised_tax = policy.prepare_rrsp_deduction(when, deduction_year, amount, self.room)
         if pool_cash:
             from .bank import fund_from_owned_banks
@@ -368,6 +455,7 @@ class CanadianRetirementAccount(TaxAdvantagedAccount):
             super().contribute(float(amount), from_account=bank)
         self.room.available -= amount
         policy.record_rrsp_deduction(deduction_year, deduction, revised_tax)
+        return amount
 
     def on_year_start(self):
         year = self.model.year

@@ -594,12 +594,31 @@ class _Extractor:
         )
         if room is None:
             return None
+        if not self.stepped:
+            return s.CanadianRRSPRoom(
+                available=room.available,
+                annual_additions=room.annual_additions,
+                deduction_limits=room.deduction_limits,
+                annual_dollar_limits=room.annual_dollar_limits,
+                pension_adjustments=room.pension_adjustments,
+            )
         year, month = self._first_period()
         available = room.available
         if month == 1 and year > room.model.start_year and year not in room.opening_by_year:
-            available += room.annual_additions.get(year, 0)
+            available += room.earned_income_addition(year)
+        deduction_limits = dict(room.deduction_limits)
+        if room.annual_dollar_limits:
+            policy = getattr(self.model, "income_tax_policy", None)
+            current_limit = room.deduction_limit_for(year, policy)
+            if current_limit is not None:
+                claimed = policy.rrsp_deductions.get(year, Decimal(0)) if policy is not None else Decimal(0)
+                deduction_limits[year] = max(Decimal(0), current_limit - claimed)
         return s.CanadianRRSPRoom(
-            available=available, annual_additions=room.annual_additions, deduction_limits=room.deduction_limits
+            available=available,
+            annual_additions=room.annual_additions,
+            deduction_limits=deduction_limits,
+            annual_dollar_limits=room.annual_dollar_limits,
+            pension_adjustments=room.pension_adjustments,
         )
 
     def tfsa_room(self, person):

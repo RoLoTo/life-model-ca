@@ -782,7 +782,9 @@ One person's assessed/planned room and deduction limits for all their RRSPs.
 |---|---|---|---|---|---|
 | `available` | Decimal | CAD | **required** |  | Available contribution room at the opening date. |
 | `annual_additions` | map[integer → Decimal] | CAD | {} |  | New room to add at the start of each future calendar year. |
-| `deduction_limits` | map[integer → Decimal] | CAD | **required** |  | Deduction limit available for the new claims modeled for each tax year. |
+| `deduction_limits` | map[integer → Decimal] | CAD | {} |  | Deduction limit available for the new claims modeled for each tax year. |
+| `annual_dollar_limits` | map[integer → Decimal] | CAD | {} |  | Annual RRSP dollar limits by calendar year for dynamic earned-income room accrual (18% of prior-year salary, option benefit and net rental income or loss, less pension adjustment). |
+| `pension_adjustments` | map[integer → Decimal] | CAD | {} |  | Annual pension adjustment keyed by the earned-income year, reducing next year's room. |
 
 ## CanadianTFSARoom
 
@@ -1644,7 +1646,8 @@ Pay a dated contribution from settled cash and claim the full amount in the elec
 | `pool_cash` | boolean |  | `False` |  | Top up from the same owner's other available CAD banks. |
 | `bank` | string |  | **required** |  | Id of the owner's available bank account. |
 | `account` | string |  | **required** |  | Id of the owner's RRSP. |
-| `amount` | Decimal | CAD | **required** |  | Exact cash contribution and deduction amount. |
+| `amount` | Decimal (optional) | CAD | — |  | Exact cash contribution and deduction amount. Mutually exclusive with room_fraction. |
+| `room_fraction` | Decimal (optional) |  | — |  | Fraction (0 to 1] of remaining eligible RRSP deduction room to contribute. Mutually exclusive with amount; skips cleanly when remaining room is zero. |
 | `deduction_year` | integer |  | **required** |  | Contribution year or eligible preceding tax year. Start the run by that tax year. |
 
 ## WithdrawRegisteredEvent
@@ -2091,6 +2094,7 @@ Apply surplus bank cash to mortgage principal after bills, reserving cash for ta
 | `cash_fraction` | number |  | `1.0` |  | Fraction of cash above the tax holdback and floor to pay, from zero to one. |
 | `cash_floor` | number | USD | `0.0` |  | Spendable cash to retain in addition to the tax holdback. |
 | `reserve_ontario_tax` | boolean |  | `False` |  | Protect unpaid and estimated Ontario income tax in addition to the cash floor. |
+| `reserve_rrsp_fraction` | Decimal (optional) |  | — |  | Protect this fraction (0 to 1] of the current year's remaining eligible RRSP room in addition to the cash floor. |
 
 ## HelocDrawEvent
 

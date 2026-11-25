@@ -776,6 +776,8 @@ class _Builder:
                         available=data.available,
                         annual_additions=data.annual_additions,
                         deduction_limits=data.deduction_limits,
+                        annual_dollar_limits=data.annual_dollar_limits,
+                        pension_adjustments=data.pension_adjustments,
                     )
                 room = self.rrsp_rooms[person.unique_id]
             return CanadianRetirementAccount(

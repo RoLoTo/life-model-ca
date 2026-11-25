@@ -1719,12 +1719,22 @@ class _SpecChecker:
             elif field == "bank" and target[2].reserve:
                 self.error(f"{path}.bank", "the contribution must use available bank cash")
         person = self.people.get(event.person)
-        if person is not None and (
-            person.rrsp_room is None or event.deduction_year not in person.rrsp_room.deduction_limits
-        ):
-            self.error(
-                f"{path}.deduction_year", "supply owner-level rrsp_room and a limit for the elected deduction year"
+        if person is not None:
+            room = person.rrsp_room
+            has_limit = room is not None and (
+                event.deduction_year in room.deduction_limits
+                or (
+                    bool(room.annual_dollar_limits)
+                    and all(
+                        y in room.deduction_limits or y in room.annual_additions or y in room.annual_dollar_limits
+                        for y in range(self.start + 1, event.deduction_year + 1)
+                    )
+                )
             )
+            if not has_limit:
+                self.error(
+                    f"{path}.deduction_year", "supply owner-level rrsp_room and a limit for the elected deduction year"
+                )
         if self.spec.meta.ontario_retirement_tax is None:
             self.error(path, "a dated RRSP deduction needs the Ontario return policy")
         if event.deduction_year < self.start:

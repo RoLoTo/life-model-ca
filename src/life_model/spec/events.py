@@ -1011,6 +1011,7 @@ def _rrsp_contribute(builder: "_Builder", person, event: s.RRSPContributeEvent) 
         date(event.at.year, event.at.month, event.at.day),
         deduction_year=event.deduction_year,
         pool_cash=event.pool_cash,
+        room_fraction=event.room_fraction,
     )
 
 
@@ -1148,8 +1149,17 @@ def _prepay_mortgage(builder: "_Builder", person, event: s.MortgagePrepaymentEve
         from ..tax.ontario_policy import cash_reserve_for_owner
 
         tax_holdback = float(cash_reserve_for_owner(person)) if event.reserve_ontario_tax else 0.0
+    cash_floor = event.cash_floor
+    if event.reserve_rrsp_fraction:
+        room = next(
+            (a.room for a in person.canadian_deferred if a.kind == "RRSP" and a.room is not None),
+            None,
+        )
+        if room is not None:
+            policy = getattr(builder.model, "income_tax_policy", None)
+            cash_floor += float(room.planned_contribution(when.year, event.reserve_rrsp_fraction, policy))
     home.mortgage.prepay_surplus(
-        when, cash_fraction=event.cash_fraction, cash_floor=event.cash_floor, tax_holdback=tax_holdback
+        when, cash_fraction=event.cash_fraction, cash_floor=cash_floor, tax_holdback=tax_holdback
     )
 
 

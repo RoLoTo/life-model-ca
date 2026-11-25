@@ -332,7 +332,8 @@ class OntarioRetirementPolicy:
         if when >= self.settlement_dates[year]:
             raise ValueError("The prior return must still be awaiting settlement when the contribution is made")
         total = money(self.rrsp_deductions.get(year, D(0)) + amount)
-        if year not in room.deduction_limits or total > room.deduction_limits[year]:
+        limit = room.deduction_limit_for(year, self)
+        if limit is None or total > limit:
             raise ValueError(f"The RRSP deduction exceeds the supplied limit for {year}")
         if year == when.year:
             return total, None
