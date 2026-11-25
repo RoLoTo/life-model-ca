@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from decimal import Decimal
 
-from ..canada.rates import OntarioRates, ontario_rates, project_ontario_income_tax_rates
+from ..canada.rates import CPP_EXEMPTION, OntarioRates, ontario_rates, project_ontario_income_tax_rates
 from ..ledger import FlowKind
 from ..lifeevents import LifeEvent, LifeEvents
 from .canadian_employment import EmploymentIncome
@@ -146,7 +146,7 @@ class OntarioRetirementPolicy:
         self.rrsp_deductions: dict[int, Decimal] = {}
         self.employment: dict[tuple[int, str], EmploymentIncome] = {}
         self.statements: dict[tuple[int, str], OntarioTaxStatement] = {}
-        self.exercises: dict[tuple[int, str], tuple[OptionExercise, Decimal]] = {}
+        self.exercises: dict[tuple[int, str], tuple[OptionExercise, Decimal, Decimal]] = {}
         self.dispositions: dict[tuple[int, str], ShareDisposition] = {}
         self.dividends: dict[tuple[int, str], Decimal] = {}
         self.rentals: dict[tuple[int, str], tuple[Decimal, Decimal, Decimal]] = {}
@@ -270,10 +270,18 @@ class OntarioRetirementPolicy:
     def record_payroll(self, pay, when: date, event_id: str) -> None:
         self.record_employment(when, event_id, EmploymentIncome.from_ontario_pay(pay))
 
-    def record_option_exercise(self, when: date, event_id: str, exercise: OptionExercise, *, withheld: Decimal) -> None:
-        if withheld < 0:
-            raise ValueError("Option income tax withholding cannot be negative")
-        self.exercises[self.validate_event(when, event_id)] = exercise, withheld
+    def record_option_exercise(
+        self,
+        when: date,
+        event_id: str,
+        exercise: OptionExercise,
+        *,
+        withheld: Decimal,
+        payroll_withheld: Decimal = _ZERO,
+    ) -> None:
+        if withheld < 0 or payroll_withheld < 0:
+            raise ValueError("Option tax and payroll withholding cannot be negative")
+        self.exercises[self.validate_event(when, event_id)] = exercise, withheld, payroll_withheld
 
     def record_share_disposition(self, when: date, event_id: str, sale: ShareDisposition) -> None:
         self.dispositions[self.validate_event(when, event_id)] = sale
@@ -338,25 +346,52 @@ class OntarioRetirementPolicy:
         fx_pool = self.foreign_cash_pool
         if fx_pool is not None:
             gains += fx_pool.reportable(year)
+        salary = sum((item.salary for item in employment), D(0))
+        emp_base_cpp = sum((item.base_cpp for item in employment), D(0))
+        emp_enhanced_cpp = sum((item.enhanced_cpp for item in employment), D(0))
+        ei = sum((item.ei for item in employment), D(0))
+        option_benefit = sum((item.benefit for item, _, _ in exercises), D(0)) + sum(
+            (item.benefit for item in additional_options), D(0)
+        )
+        option_deduction = sum((item.deduction for item, _, _ in exercises), D(0)) + sum(
+            (item.deduction for item in additional_options), D(0)
+        )
+        option_cpp = sum((payroll for _, _, payroll in exercises), D(0))
+        rates = ontario_rates(self.rate_year(year))
+        enhanced_max = rates.cpp_max - rates.base_cpp_max + rates.cpp2_max
+        if emp_base_cpp > rates.base_cpp_max or emp_enhanced_cpp > enhanced_max or ei > rates.ei_max:
+            raise ValueError("Supply reconciled CPP and EI amounts after any overpayment calculation")
+        reconciled_overpayment = _ZERO
+        if option_cpp:
+            pensionable = salary + option_benefit
+            req_cpp1 = min(rates.cpp_max, money(max(_ZERO, pensionable - CPP_EXEMPTION) * rates.cpp_rate))
+            cpp2_earnings = max(_ZERO, min(D(rates.yampe), pensionable) - D(rates.ympe))
+            req_cpp2 = min(rates.cpp2_max, money(cpp2_earnings * rates.cpp2_rate))
+            req_total = req_cpp1 + req_cpp2
+            total_paid = emp_base_cpp + emp_enhanced_cpp + option_cpp
+            allowable = min(total_paid, req_total)
+            allowable_cpp1 = min(allowable, req_cpp1)
+            base_cpp = min(rates.base_cpp_max, money(allowable_cpp1 * rates.cpp_base_rate / rates.cpp_rate))
+            enhanced_cpp = allowable - base_cpp
+            reconciled_overpayment = max(_ZERO, total_paid - req_total)
+        else:
+            base_cpp = emp_base_cpp
+            enhanced_cpp = emp_enhanced_cpp
         facts = {
-            "salary": sum((item.salary for item in employment), D(0)),
-            "base_cpp": sum((item.base_cpp for item in employment), D(0)),
-            "enhanced_cpp": sum((item.enhanced_cpp for item in employment), D(0)),
-            "ei": sum((item.ei for item in employment), D(0)),
-            "option_benefit": sum((item.benefit for item, _ in exercises), D(0))
-            + sum((item.benefit for item in additional_options), D(0)),
-            "option_deduction": sum((item.deduction for item, _ in exercises), D(0))
-            + sum((item.deduction for item in additional_options), D(0)),
+            "salary": salary,
+            "base_cpp": base_cpp,
+            "enhanced_cpp": enhanced_cpp,
+            "ei": ei,
+            "option_benefit": option_benefit,
+            "option_deduction": option_deduction,
             "net_capital_gain": gains,
             "included_capital_gain": money(max(D(0), gains) * D(".5")),
             "share_basis_disposed": sum((sale.basis_disposed for sale in sales), D(0)),
         }
+        if option_cpp:
+            facts["option_cpp_withheld"] = option_cpp
         if fx_pool is not None:
             facts.update(usd_fx_realized=fx_pool.realized.get(year, D(0)), usd_fx_reportable=fx_pool.reportable(year))
-        rates = ontario_rates(self.rate_year(year))
-        enhanced_max = rates.cpp_max - rates.base_cpp_max + rates.cpp2_max
-        if facts["base_cpp"] > rates.base_cpp_max or facts["enhanced_cpp"] > enhanced_max or facts["ei"] > rates.ei_max:
-            raise ValueError("Supply reconciled CPP and EI amounts after any overpayment calculation")
         rental = [facts for (y, _), facts in self.rentals.items() if y == year]
         if rental:
             gross, costs, interest = (sum(amounts, D(0)) for amounts in zip(*rental, strict=True))
@@ -366,15 +401,19 @@ class OntarioRetirementPolicy:
                 rental_eligible_interest=interest,
                 rental_net_income=gross - costs - interest,
             )
+        statement_overpayment = sum((item.cpp_overpayment for item in statements), D(0))
+        total_overpayment = statement_overpayment + reconciled_overpayment
         if statements:
             facts.update(
                 {
                     "reported_interest": sum((item.taxable_interest for item in statements), D(0)),
                     "ei_benefits": sum((item.taxable for item in benefits), D(0)),
                     "repayable_regular_ei": sum((item.repayable_regular for item in benefits), D(0)),
-                    "cpp_overpayment": sum((item.cpp_overpayment for item in statements), D(0)),
+                    "cpp_overpayment": total_overpayment,
                 }
             )
+        elif total_overpayment:
+            facts["cpp_overpayment"] = total_overpayment
         pensions = [payment for (y, _), payment in self.pensions.items() if y == year]
         cpp = sum((gross for kind, gross, _ in pensions if kind == "cpp"), D(0)) + sum(
             (statement.cpp_retirement for statement in statements), D(0)
@@ -498,7 +537,7 @@ class OntarioRetirementPolicy:
         tax = inputs.calculate(self.rrsp_deductions.get(year, D(0)))
         withheld = D(str(payments_of(owner, year).withheld_total))
         withheld += sum(item.withheld for (y, _), item in self.employment.items() if y == year)
-        withheld += sum(amount for (y, _), (_, amount) in self.exercises.items() if y == year)
+        withheld += sum(amount for (y, _), (_, amount, _) in self.exercises.items() if y == year)
         withheld += sum(item.withheld for (y, _), item in self.statements.items() if y == year)
         withheld += sum(amount for (y, _), (_, _, amount) in self.pensions.items() if y == year)
         return OntarioReturn(

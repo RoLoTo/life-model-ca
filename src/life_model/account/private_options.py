@@ -167,9 +167,12 @@ class PrivateOptionGrant(LifeModelAgent):
             )
         pending.balance = float(book_strike)
         reported_withholding = money(income_tax_withheld * tax_fx) if native_cash else income_tax_withheld
+        reported_payroll = money(payroll_withheld * tax_fx) if native_cash else payroll_withheld
 
         def recognize():
-            policy.record_option_exercise(tax_on, event_id, purchase, withheld=reported_withholding)
+            policy.record_option_exercise(
+                tax_on, event_id, purchase, withheld=reported_withholding, payroll_withheld=reported_payroll
+            )
             self.holding.pool.add_shares(quantity, purchase.basis_added)
             self.holding.pending_quantity += quantity
             marked = money(quantity * self.holding.cad_price)
@@ -196,6 +199,7 @@ class PrivateOptionGrant(LifeModelAgent):
                     cash_currency=payment_currency,
                     income_tax_withheld_cad=float(reported_withholding),
                     income_tax_withheld=float(income_tax_withheld),
+                    payroll_withheld_cad=float(reported_payroll),
                     payroll_withheld=float(payroll_withheld),
                 )
             )

@@ -157,3 +157,118 @@ class PrivateOptionExerciseTests(unittest.TestCase):
             model.step()
         self.assertEqual(model.income_tax_policy.returns[2027].working_income["net_capital_gain"], D(41250))
         assert_conservation(model, monthly=True)
+
+    def test_option_cpp_reconciles_overpayment_after_maxed_employment_cpp(self):
+        spec = option_scenario(exercise_december=True)
+        spec["meta"]["end_year"] = 2027
+        spec["people"][0]["accounts"][0]["balance"] = 100000
+        # 2026 employment already reaches full base CPP ($3,519.45) and enhanced CPP ($1,127.00).
+        spec["events"].append(
+            {
+                "action": "ontario_tax_statement",
+                "id": "prior-employment",
+                "person": "owner",
+                "at": {"year": 2026, "month": 12, "day": 31},
+                "employment": {
+                    "salary": 100000,
+                    "base_cpp": "3519.45",
+                    "enhanced_cpp": "1127.00",
+                    "ei": "1123.07",
+                    "withheld": 25000,
+                },
+            }
+        )
+        # USD-funded exercise: payroll_withheld USD 2,000 at tax_fx 1.40 -> CAD 2,800 overpayment.
+        spec["people"][0]["accounts"].append(
+            {
+                "kind": "foreign_cash",
+                "id": "usd",
+                "name": "USD cash",
+                "currency": "USD",
+                "units": 10000,
+                "cad_mark": "1.40",
+                "opening_cad_basis": 14000,
+            }
+        )
+        spec["events"][1].update(
+            bank="usd",
+            tax_fx="1.40",
+            income_tax_withheld=1000,
+            payroll_withheld=2000,
+        )
+        model = build(spec)
+        while not model.is_finished:
+            model.step()
+        ret = model.income_tax_policy.returns[2026]
+        self.assertEqual(ret.working_income["base_cpp"], D("3519.45"))
+        self.assertEqual(ret.working_income["enhanced_cpp"], D("1127.00"))
+        self.assertEqual(ret.working_income["option_cpp_withheld"], D("2800.00"))
+        self.assertEqual(ret.working_income["cpp_overpayment"], D("2800.00"))
+        self.assertEqual(ret.withheld, D("26400.00"))
+        self.assertEqual(ret.balance, ret.tax.total - D("26400.00") - D("2800.00"))
+        self.assertEqual(ret.amount_settled, ret.balance)
+        assert_conservation(model, monthly=True)
+
+    def test_option_cpp_fills_remaining_annual_credits_deductions_and_refunds_excess(self):
+        spec = option_scenario(exercise_december=False)
+        spec["meta"]["end_year"] = 2028
+        spec["meta"]["ontario_retirement_tax"]["freeze_after"] = 2027
+        spec["meta"]["ontario_retirement_tax"]["settlement_dates"][2028] = "2029-04-30"
+        spec["people"][0]["accounts"][0]["balance"] = 200000
+        # 2027 partial salary ($60,000) pays $3,248.75 CPP ($2,683.75 base + $565.00 enhanced).
+        # Exercise benefit is $100,000 CAD (20,000 * ($9 - $4) * 1.00), bringing pensionable above 2027 YAMPE.
+        spec["people"][0]["accounts"][-1].update(quantity=20000, strike_price=4, currency="CAD")
+        spec["events"][1].update(
+            quantity=20000,
+            market_price=9,
+            tax_fx=1,
+            income_tax_withheld=15000,
+            payroll_withheld=4637,
+        )
+        spec["events"].append(
+            {
+                "action": "ontario_tax_statement",
+                "id": "salary-2027",
+                "person": "owner",
+                "at": {"year": 2027, "month": 12, "day": 31},
+                "employment": {
+                    "salary": 60000,
+                    "base_cpp": "2683.75",
+                    "enhanced_cpp": "565.00",
+                    "ei": 0,
+                    "withheld": 10000,
+                },
+            }
+        )
+        model = build(spec)
+        while not model.is_finished:
+            model.step()
+        ret = model.income_tax_policy.returns[2027]
+        # Reconciles to full 2027 caps ($3,477 base + $1,160 enhanced = $4,637) and $3,248.75 overpayment.
+        self.assertEqual(ret.working_income["base_cpp"], D("3477.00"))
+        self.assertEqual(ret.working_income["enhanced_cpp"], D("1160.00"))
+        self.assertEqual(ret.working_income["option_cpp_withheld"], D("4637.00"))
+        self.assertEqual(ret.working_income["cpp_overpayment"], D("3248.75"))
+        self.assertEqual(ret.tax_inputs.base_cpp, D("3477.00"))
+        self.assertEqual(ret.amount_settled, ret.balance)
+        assert_conservation(model, monthly=True)
+
+    def test_under_withheld_option_cpp_claims_actual_amount_without_overpayment(self):
+        spec = option_scenario(exercise_december=False)
+        spec["people"][0]["accounts"][-1].update(quantity=2000, strike_price=4, currency="CAD")
+        # Benefit $10,000 CAD -> required 2027 CPP is ($10,000 - $3,500) * 5.75% = $373.75; only $200 withheld.
+        spec["events"][1].update(
+            quantity=2000,
+            market_price=9,
+            tax_fx=1,
+            income_tax_withheld=1000,
+            payroll_withheld=200,
+        )
+        model = build(spec)
+        while not model.is_finished:
+            model.step()
+        ret = model.income_tax_policy.returns[2027]
+        self.assertEqual(ret.working_income["base_cpp"], D("165.22"))
+        self.assertEqual(ret.working_income["enhanced_cpp"], D("34.78"))
+        self.assertNotIn("cpp_overpayment", ret.working_income)
+        assert_conservation(model, monthly=True)
