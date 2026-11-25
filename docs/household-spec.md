@@ -1678,6 +1678,7 @@ Transfer all or part of an owned RRSP directly to an owned RRIF.
 | `rrsp` | string |  | **required** |  | Id of the source RRSP. |
 | `rrif` | string |  | **required** |  | Id of the receiving RRIF. |
 | `amount` | Decimal (optional) | CAD | — |  | Principal to transfer. Omit to transfer all. |
+| `cap_to_balance` | boolean |  | `False` |  | Allow a partial transfer to move the remaining RRSP balance when smaller than amount. |
 
 ## OntarioTaxStatementEvent
 

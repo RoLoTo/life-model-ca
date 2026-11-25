@@ -3995,6 +3995,9 @@ class RRSPToRRIFEvent(RegisteredCashEvent):
     amount: CashAmount | None = spec_field(
         None, description="Principal to transfer. Omit to transfer all.", gt=0, unit="CAD"
     )
+    cap_to_balance: bool = spec_field(
+        False, description="Allow a partial transfer to move the remaining RRSP balance when smaller than amount."
+    )
 
 
 class StopContributionEvent(EventBase):

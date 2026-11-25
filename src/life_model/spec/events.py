@@ -973,7 +973,7 @@ def _registered_cash_event(builder: "_Builder", person, event: s.RegisteredCashE
             for account in (source, destination)
         ):
             raise ValueError("Both registered accounts must be open and belong to the owner")
-        transfer_rrsp_to_rrif(source, destination, when, event.amount)
+        transfer_rrsp_to_rrif(source, destination, when, event.amount, cap_to_balance=event.cap_to_balance)
     else:
         assert isinstance(event, s.WithdrawRegisteredEvent)
         account, bank = items.get(event.account), items.get(event.bank)

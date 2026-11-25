@@ -193,11 +193,15 @@ def draw_registered_cash_after_withholding(owner, amount: float) -> float:
     return float(received)
 
 
-def transfer_rrsp_to_rrif(rrsp, rrif, on: date, amount: Decimal | None) -> None:
+def transfer_rrsp_to_rrif(rrsp, rrif, on: date, amount: Decimal | None, *, cap_to_balance: bool = False) -> None:
     """Move principal between the owner's registered accounts without a cash withdrawal."""
     if rrsp.kind != "RRSP" or rrif.kind != "RRIF" or rrsp.owner is not rrif.owner:
         raise ValueError("A direct transfer needs an existing RRSP and RRIF of the same owner")
-    amount = D(str(rrsp.balance)).quantize(D(".01"), rounding=ROUND_DOWN) if amount is None else amount
+    available = _whole_cent_balance(rrsp)
+    if amount is None:
+        amount = available
+    elif cap_to_balance:
+        amount = min(amount, available)
     _check_registered_cash(rrsp, on, amount)
     if not amount:
         return
