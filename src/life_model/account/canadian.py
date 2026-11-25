@@ -197,13 +197,13 @@ def draw_registered_cash_after_withholding(owner, amount: float, *, max_gross: D
         remaining_gross = cap if remaining_gross is None else min(remaining_gross, cap)
     received = D(0)
     for account in owner.canadian_deferred:
-        if received >= target:
+        if received >= target or (remaining_gross is not None and remaining_gross <= 0):
             break
         available = _whole_cent_balance(account)
         if remaining_gross is not None:
             available = min(available, remaining_gross)
-            if available <= 0:
-                break
+        if available <= 0:
+            continue
         exempt = account.remaining_minimum(on.year)
         gross = cash_draw_for_target(target - received, available, exempt)
         if gross:

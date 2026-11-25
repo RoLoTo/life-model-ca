@@ -402,6 +402,88 @@ def test_midyear_start_enforces_pretax_floor_with_withholding():
     assert_conservation(model, monthly=True)
 
 
+def test_empty_leading_registered_account_does_not_block_later_funded_accounts():
+    from life_model.api import build
+    from life_model.canada.retirement import EndingTargets, fund_final_reserve
+    from life_model.checks import assert_conservation
+
+    # Empty first RRSP followed by funded second RRSP ($120k) with $100k floor and $1k net bill:
+    # must skip the empty account and draw $1,111.11 gross ($111.11 WH, $1,000.00 net) from the second.
+    spec = _withholding_floor_spec(
+        accounts=[
+            {"kind": "bank", "id": "bank", "balance": 0, "interest_pct": 0, "primary": True},
+            {
+                "kind": "rrsp",
+                "id": "a-empty",
+                "balance": 0,
+                "growth_pct": 0,
+                "owner_birth": "1971-01-01",
+                "convert_at_maturity": True,
+            },
+            {
+                "kind": "rrsp",
+                "id": "b-funded",
+                "balance": 120000,
+                "growth_pct": 0,
+                "owner_birth": "1971-01-01",
+                "convert_at_maturity": True,
+            },
+        ],
+        events=[{"action": "one_time_expense", "id": "bill", "person": "owner", "at": at(2031, 1, 15), "amount": 1000}],
+    )
+    model = build(spec, seed=1, checks="strict")
+    fund_final_reserve(model, person="owner", ending=EndingTargets(sources={"pretax": D(100000)}), from_year=2031)
+    model.step()
+    assert model.household.people["owner"].debt == 0
+    assert D(str(round(model.household.items["a-empty"].balance, 2))) == D("0.00")
+    assert D(str(round(model.household.items["b-funded"].balance, 2))) == D("118888.89")
+    assert_conservation(model, monthly=True)
+
+    # Empty first RRSP + two funded RRSPs ($5k and $110k -> $15k spare above $100k floor) facing a $13k bill:
+    # skips empty, draws $5k gross ($4.5k net, 10% WH) from second and $10k gross ($8k net, 20% WH) from third,
+    # preserving the exact $100k combined floor and leaving $500 unpaid.
+    spec_multi = _withholding_floor_spec(
+        accounts=[
+            {"kind": "bank", "id": "bank", "balance": 0, "interest_pct": 0, "primary": True},
+            {
+                "kind": "rrsp",
+                "id": "a-empty",
+                "balance": 0,
+                "growth_pct": 0,
+                "owner_birth": "1971-01-01",
+                "convert_at_maturity": True,
+            },
+            {
+                "kind": "rrsp",
+                "id": "b-small",
+                "balance": 5000,
+                "growth_pct": 0,
+                "owner_birth": "1971-01-01",
+                "convert_at_maturity": True,
+            },
+            {
+                "kind": "rrsp",
+                "id": "c-large",
+                "balance": 110000,
+                "growth_pct": 0,
+                "owner_birth": "1971-01-01",
+                "convert_at_maturity": True,
+            },
+        ],
+        events=[
+            {"action": "one_time_expense", "id": "bill", "person": "owner", "at": at(2031, 1, 15), "amount": 13000}
+        ],
+    )
+    model2 = build(spec_multi, seed=1, checks="strict")
+    fund_final_reserve(model2, person="owner", ending=EndingTargets(sources={"pretax": D(100000)}), from_year=2031)
+    model2.step()
+    assert D(str(round(model2.household.items["a-empty"].balance, 2))) == D("0.00")
+    assert D(str(round(model2.household.items["b-small"].balance, 2))) == D("0.00")
+    assert D(str(round(model2.household.items["c-large"].balance, 2))) == D("100000.00")
+    assert D(str(round(model2.household.people["owner"].debt, 2))) == D("500.00")
+    assert_conservation(model2, monthly=True)
+
+
 def test_final_reserve_and_discounted_pretax_floor_never_breach_with_withholding():
     from life_model.canada.retirement import EndingTargets
 
