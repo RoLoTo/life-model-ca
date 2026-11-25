@@ -352,6 +352,7 @@ class Loan(LifeModelAgent, ABC):
         self, principal: float, rate_pct: float, term_months: int, *, origination: tuple[int, int] | None = None
     ) -> None:
         """Start a repayment schedule with the given principal and monthly-basis annual rate."""
+        self.schedule = "contract"
         self.principal = principal
         self.loan_amount = principal
         self.yearly_interest_rate = rate_pct

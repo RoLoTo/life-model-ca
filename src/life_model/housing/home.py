@@ -8,7 +8,7 @@ import math
 from calendar import monthrange
 from dataclasses import dataclass, replace
 from datetime import date
-from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from ..base_classes import LOAN_RENAMES, Loan
@@ -52,6 +52,7 @@ class MortgageRenewalState:
     origination: str | None
     acquisition_cap: float | None
     grandfathered_cap: float
+    rental_eligible_principal: float | None = None
 
 
 class Home(LifeModelAgent):
@@ -413,6 +414,11 @@ class Home(LifeModelAgent):
             )
             self.person.add_debt(unpaid, to_account=self, cause=f"{cause}: underwater payoff")
 
+        from ..debt.bridge import DatedBridgeLine
+
+        for line in list(self.person.home_equity_lines):
+            if isinstance(line, DatedBridgeLine) and line.rental_home is self and line.home is not self:
+                line.end_rental_use(sale_date)
         self.sold = True
         self.model.registries.homes.unregister(self.person, self)
         self.model.event_log.add(
@@ -444,8 +450,10 @@ class Home(LifeModelAgent):
         if pmi:
             lines["pmi"] = pmi
         total = sum(lines.values())
+        eligible_share = None
         if self.mortgage is not None:
             before = self.mortgage.principal
+            eligible_share = self.mortgage.rental_eligible_share
             interest_before = self.mortgage.interest_paid_this_year
             paid = self.mortgage.service_month()
             if before > 0:
@@ -454,7 +462,11 @@ class Home(LifeModelAgent):
                 lines["mortgage_principal_before"] = before
             total += paid
         if self.ontario_rental is not None:
-            expense = float(self.ontario_rental.record_month(self, lines.get("mortgage_interest", 0.0)))
+            expense = float(
+                self.ontario_rental.record_month(
+                    self, lines.get("mortgage_interest", 0.0), mortgage_eligible_share=eligible_share
+                )
+            )
             lines["rental_operating_cost"] = expense
             total += expense
         self.year_payment = lines
@@ -731,6 +743,7 @@ class Mortgage(Loan):
         rate_compounding: MortgageRateCompounding = "monthly",
         prepayment_privilege: MortgagePrepaymentPrivilege | None = None,
         renewal_state: MortgageRenewalState | None = None,
+        rental_eligible_principal: float | Decimal | None = None,
     ):
         """Mortgage
 
@@ -801,6 +814,14 @@ class Mortgage(Loan):
         #: The most of the balance that is grandfathered acquisition debt (incurred on or before
         #: 2017-12-15: the $1M limit); a refinance keeps it up to the refinanced balance.
         self.grandfathered_cap = 0.0 if renewal_state is None else renewal_state.grandfathered_cap
+        saved_eligible = None if renewal_state is None else renewal_state.rental_eligible_principal
+        raw_eligible = saved_eligible if rental_eligible_principal is None else rental_eligible_principal
+        self.rental_eligible_principal: Decimal | None = None
+        if raw_eligible is not None:
+            eligible = Decimal(str(raw_eligible))
+            if not eligible.is_finite() or eligible < 0:
+                raise ValueError("rental_eligible_principal must be finite and non-negative")
+            self.rental_eligible_principal = eligible
         self._renewal_baseline = renewal_state
         self._renewal_opening_payments = self.payments_made if renewal_state is not None else 0
 
@@ -848,14 +869,58 @@ class Mortgage(Loan):
             self._renewal_opening_payments = self.payments_made
         elif self.origination is not None and cutoff is not None and self.origination <= cutoff:
             self.grandfathered_cap = self.principal
+        if self.rental_eligible_principal is not None:
+            principal = Decimal(str(self.principal))
+            if self.rental_eligible_principal > principal + Decimal("0.01"):
+                raise ValueError("rental_eligible_principal cannot exceed the mortgage balance")
+            self.rental_eligible_principal = min(self.rental_eligible_principal, principal)
+
+    @property
+    def rental_eligible_share(self) -> Decimal | None:
+        """Eligible Canadian rental-acquisition share of the current mortgage principal."""
+        if self.rental_eligible_principal is None:
+            return None
+        if self.principal <= 0:
+            return Decimal(0)
+        return min(Decimal(1), self.rental_eligible_principal / Decimal(str(self.principal)))
+
+    def _reduce_rental_eligible_principal(self, before: float, after: float) -> None:
+        if self.rental_eligible_principal is None:
+            return
+        if after <= 0 or before <= 0:
+            self.rental_eligible_principal = Decimal(0)
+            return
+        if after < before:
+            before_dec = Decimal(str(before))
+            after_dec = Decimal(str(after))
+            if self.rental_eligible_principal >= before_dec:
+                self.rental_eligible_principal = after_dec
+            else:
+                self.rental_eligible_principal = min(
+                    after_dec,
+                    (self.rental_eligible_principal * after_dec / before_dec).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    ),
+                )
 
     def pay_at_maturity(
-        self, when: date, *, interest_due: float, cash_floor: float = 0.0, bridge: "DatedBridgeLine | None" = None
+        self,
+        when: date,
+        *,
+        interest_due: float,
+        cash_floor: float = 0.0,
+        bridge: "DatedBridgeLine | None" = None,
+        replace_with: "DatedBridgeLine | None" = None,
+        replace_principal: float | Decimal | None = None,
+        replace_eligible_fraction: float | Decimal | None = None,
+        replace_eligible_cap: float | Decimal | None = None,
     ) -> None:
         """Discharge the live principal and quoted final interest before scheduled bills.
 
-        An approved bridge draws up to the lesser of the whole cents needed and available credit.
-        Draw spendable cash above the floor and carry any remaining gap as debt due next month.
+        When ``replace_with`` is given, up to ``replace_principal`` (default full live principal)
+        is repaid directly from that credit line without passing through bank cash, preserving
+        eligible acquisition-debt tracing according to ``replace_eligible_fraction``.
+        An approved bridge draws up to the lesser of any remaining cash gap and available credit.
         """
         if (when.year, when.month) != (self.model.year, self.model.month):
             raise ValueError("A mortgage payoff must execute in its scheduled month")
@@ -866,13 +931,54 @@ class Mortgage(Loan):
         person = self.person
         if bridge is not None and bridge.person is not person:
             raise ValueError("The borrower must own the approved bridge line")
+        if replace_with is not None and replace_with.person is not person:
+            raise ValueError("The borrower must own the replacement credit line")
         principal = self.principal
+        eligible_share_before = self.rental_eligible_share
         payoff = principal + interest_due
+        replace_draw = 0.0
+        replace_eligible = Decimal(0)
+        if replace_with is not None:
+            if replace_eligible_fraction is None:
+                raise ValueError("Direct credit-line replacement requires an explicit replace_eligible_fraction")
+            frac = Decimal(str(replace_eligible_fraction))
+            if not frac.is_finite() or not 0 <= frac <= 1:
+                raise ValueError("replace_eligible_fraction must be between zero and one")
+            principal_cents = Decimal(str(snap_money(principal))).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            if replace_principal is None:
+                wanted = principal_cents
+            else:
+                wanted = Decimal(str(replace_principal))
+                if (
+                    not wanted.is_finite()
+                    or wanted < 0
+                    or wanted != wanted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                ):
+                    raise ValueError("replace_principal must be non-negative whole cents")
+            actual_replace = min(wanted, principal_cents)
+            if actual_replace > 0:
+                effective_share = frac if eligible_share_before is None else min(frac, eligible_share_before)
+                replace_eligible = (actual_replace * effective_share).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                if replace_eligible_cap is not None:
+                    cap = Decimal(str(replace_eligible_cap))
+                    if not cap.is_finite() or cap < 0 or cap != cap.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP):
+                        raise ValueError("replace_eligible_cap must be non-negative whole cents")
+                    replace_eligible = min(replace_eligible, cap)
+                replace_draw = replace_with.replace_debt(
+                    actual_replace,
+                    when=when,
+                    target_loan=self,
+                    rental_home=getattr(self, "home", None),
+                    eligible_principal=replace_eligible,
+                )
+
+        remaining_principal = max(0.0, snap_money(principal - replace_draw))
+        cash_needed = remaining_principal + interest_due
         bridge_draw = 0.0
         if bridge is not None:
             bank = person.primary_bank_account
             bank_cash = person.usable_bank_balance
-            gap = snap_money(payoff + cash_floor - bank_cash)
+            gap = snap_money(cash_needed + cash_floor - bank_cash)
             if gap > 0 and bank is not None and not bank.reserve:
                 requested = min(_bridge_draw_amount(gap), bridge.get_available_credit())
                 if requested > 0:
@@ -881,9 +987,11 @@ class Mortgage(Loan):
         cash_available = max(0.0, snap_money(person.usable_bank_balance - cash_floor))
         shortfall = 0.0
         for amount, account, sink, cause in (
-            (principal, self, None, "mortgage payoff principal"),
+            (remaining_principal, self, None, "mortgage payoff principal"),
             (interest_due, None, "mortgage interest", "mortgage payoff interest"),
         ):
+            if amount <= 0:
+                continue
             cash_requested = min(amount, cash_available)
             undrawn = person.deduct_from_bank_accounts(
                 cash_requested, kind=FlowKind.HOUSING, to_account=account, sink=sink, cause=cause, include_reserve=False
@@ -895,13 +1003,28 @@ class Mortgage(Loan):
                 unpaid, kind=FlowKind.HOUSING, to_account=account, sink=sink, cause=cause, defer_until_next_month=True
             )
             shortfall += unpaid
+        home = getattr(self, "home", None)
+        if home is not None and home.ontario_rental is not None and interest_due > 0:
+            share = (
+                home.ontario_rental.eligible_interest_fraction
+                if eligible_share_before is None
+                else eligible_share_before
+            )
+            elig_due = (Decimal(str(interest_due)) * share).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            policy = getattr(self.model, "income_tax_policy", None)
+            if elig_due > 0 and policy is not None and hasattr(policy, "record_rental_interest"):
+                policy.record_rental_interest(
+                    when, f"rental-mortgage-maturity:{self.unique_id}:{when.isoformat()}", elig_due
+                )
         self._month_start_balances.append(principal)
         self.principal = 0.0
+        if self.rental_eligible_principal is not None:
+            self.rental_eligible_principal = Decimal(0)
         self.payments_made += 1
         self.stat_principal_payment_history.append(principal)
         self.stat_interest_payment_history.append(interest_due)
         self._record_month(principal, interest_due)
-        person.stat_housing_costs = snap_money(person.stat_housing_costs + payoff)
+        person.stat_housing_costs = snap_money(person.stat_housing_costs + cash_needed)
         person.stat_interest_paid = snap_money(person.stat_interest_paid + interest_due)
         event = Event(
             EventKind.MORTGAGE_PAID_AT_MATURITY,
@@ -917,6 +1040,9 @@ class Mortgage(Loan):
         )
         if bridge is not None:
             event.details["bridge_draw"] = bridge_draw
+        if replace_with is not None:
+            event.details["replace_draw"] = replace_draw
+            event.details["replace_eligible_principal"] = float(replace_eligible)
         self.model.event_log.add(event)
 
     def prepay_surplus(
@@ -950,10 +1076,12 @@ class Mortgage(Loan):
         if limit is not None:
             paid = min(paid, float(limit))
         if paid:
+            before_prepay = self.principal
             paid -= person.deduct_from_bank_accounts(
                 paid, kind=FlowKind.HOUSING, to_account=self, cause="mortgage prepayment", include_reserve=False
             )
             self.principal -= paid
+            self._reduce_rental_eligible_principal(before_prepay, self.principal)
             self._record_month(paid, 0.0)
             if self.stat_principal_payment_history:
                 self.stat_principal_payment_history[-1] += paid
@@ -981,9 +1109,12 @@ class Mortgage(Loan):
     # --- the year's qualified residence interest (IRS Pub. 936) ---
 
     def service_month(self) -> float:
-        if self.principal > 0:
-            self._month_start_balances.append(self.principal)
-        return super().service_month()
+        before = self.principal
+        if before > 0:
+            self._month_start_balances.append(before)
+        paid = super().service_month()
+        self._reduce_rental_eligible_principal(before, self.principal)
+        return paid
 
     def on_year_start(self):
         super().on_year_start()
@@ -1014,6 +1145,9 @@ class Mortgage(Loan):
             payments_made=baseline.payments_made + self.payments_made - self._renewal_opening_payments,
             acquisition_cap=self.acquisition_cap,
             grandfathered_cap=self.grandfathered_cap,
+            rental_eligible_principal=(
+                None if self.rental_eligible_principal is None else float(self.rental_eligible_principal)
+            ),
         )
 
     def pmi_termination_reached(self, home_value: float, termination_ltv: float) -> bool:
@@ -1037,10 +1171,15 @@ class Mortgage(Loan):
         rate_compounding: MortgageRateCompounding = "monthly",
         amortization_months: int | None = None,
         prepayment_privilege: MortgagePrepaymentPrivilege | Literal["uncapped"] | None = None,
+        principal_paydown: float = 0.0,
+        target_principal: float | None = None,
+        cash_floor: float = 0.0,
     ) -> None:
         """Reprice the outstanding principal before the current month's payment.
 
         Use the remaining scheduled months unless a new amortization is given.
+        An optional ``principal_paydown`` or ``target_principal`` pays down principal from
+        spendable cash above ``cash_floor`` before repricing the remaining balance.
         The balance, acquisition debt classification and payment history carry forward.
         Omit the privilege to keep the cap and usage, pass new terms to reset them, or use
         ``"uncapped"`` to remove the cap.
@@ -1052,13 +1191,68 @@ class Mortgage(Loan):
             raise ValueError("A mortgage renewal requires a positive amortization in months")
         if not math.isfinite(rate_pct) or rate_pct < 0:
             raise ValueError("A mortgage renewal requires a finite, non-negative rate")
+        if not math.isfinite(principal_paydown) or principal_paydown < 0:
+            raise ValueError("Renewal principal paydown must be finite and non-negative")
+        if not math.isfinite(cash_floor) or cash_floor < 0:
+            raise ValueError("Renewal cash floor must be finite and non-negative")
+        if target_principal is not None:
+            if principal_paydown:
+                raise ValueError("Specify at most one of principal_paydown and target_principal on renewal")
+            if not math.isfinite(target_principal) or target_principal < 0:
+                raise ValueError("Renewal target principal must be finite and non-negative")
+            if target_principal > self.principal + 0.01:
+                raise ValueError("Renewal target principal cannot exceed the outstanding mortgage balance")
         if isinstance(prepayment_privilege, MortgagePrepaymentPrivilege):
             if prepayment_privilege.used:
                 raise ValueError("A renewal's new prepayment privilege starts with zero usage")
             if self.extra_principal_monthly:
                 raise ValueError("A lump-sum privilege cannot be combined with automatic extra principal")
-        rate = mortgage_rate_on_monthly_basis(rate_pct, rate_compounding)
+        paydown = (
+            max(0.0, snap_money(self.principal - target_principal))
+            if target_principal is not None
+            else min(self.principal, snap_money(principal_paydown))
+        )
+        paid_down = 0.0
+        if paydown > 0:
+            person = self.person
+            before = self.principal
+            cash_available = max(0.0, snap_money(person.usable_bank_balance - cash_floor))
+            cash_requested = min(paydown, cash_available)
+            cause = "mortgage renewal principal paydown"
+            undrawn = person.deduct_from_bank_accounts(
+                cash_requested, kind=FlowKind.HOUSING, to_account=self, cause=cause, include_reserve=False
+            )
+            cash_paid = cash_requested - undrawn
+            unpaid = snap_money(paydown - cash_paid)
+            person.add_debt(unpaid, kind=FlowKind.HOUSING, to_account=self, cause=cause, defer_until_next_month=True)
+            self.principal = max(0.0, snap_money(before - paydown))
+            self._reduce_rental_eligible_principal(before, self.principal)
+            self.stat_principal_payment_history.append(paydown)
+            self._record_month(paydown, 0.0)
+            person.stat_housing_costs = snap_money(person.stat_housing_costs + paydown)
+            paid_down = paydown
         effective_date = date(self.model.year, self.model.month, 1)
+        if self.principal <= 0:
+            self.principal = 0.0
+            self.monthly_payment = 0.0
+            self.model.event_log.add(
+                Event(
+                    EventKind.MORTGAGE_RENEWED,
+                    person=self.person,
+                    amount=0.0,
+                    account=self,
+                    cause="mortgage renewal paid off",
+                    date=effective_date.isoformat(),
+                    rate_pct=rate_pct,
+                    rate_compounding=rate_compounding,
+                    amortization_months=0,
+                    monthly_payment=0.0,
+                    principal_paydown=paid_down,
+                    message=f"{self.person.name} paid off the mortgage at renewal (${paid_down:,.2f})",
+                )
+            )
+            return
+        rate = mortgage_rate_on_monthly_basis(rate_pct, rate_compounding)
         origin = self.origination
         self._renewal_baseline = self.renewal_state or MortgageRenewalState(
             original_amount=self.loan_amount,
@@ -1069,6 +1263,9 @@ class Mortgage(Loan):
             origination=None if origin is None else f"{origin[0]}-{origin[1]:02d}",
             acquisition_cap=self.acquisition_cap,
             grandfathered_cap=self.grandfathered_cap,
+            rental_eligible_principal=(
+                None if self.rental_eligible_principal is None else float(self.rental_eligible_principal)
+            ),
         )
         # Payment one is in this month; snapshots use the actual count of payments made.
         self._reset_loan_schedule(self.principal, rate, remaining)
@@ -1077,22 +1274,23 @@ class Mortgage(Loan):
         self.rate_compounding = rate_compounding
         if prepayment_privilege is not None:
             self.prepayment_privilege = None if prepayment_privilege == "uncapped" else prepayment_privilege
-        self.model.event_log.add(
-            Event(
-                EventKind.MORTGAGE_RENEWED,
-                person=self.person,
-                amount=self.principal,
-                account=self,
-                cause="mortgage renewal",
-                date=effective_date.isoformat(),
-                rate_pct=rate_pct,
-                rate_compounding=rate_compounding,
-                amortization_months=remaining,
-                monthly_payment=self.monthly_payment,
-                message=f"{self.person.name} renewed the mortgage at {rate_pct:g}% for {remaining} payments "
-                f"(${self.monthly_payment:,.2f}/month)",
-            )
+        event = Event(
+            EventKind.MORTGAGE_RENEWED,
+            person=self.person,
+            amount=self.principal,
+            account=self,
+            cause="mortgage renewal",
+            date=effective_date.isoformat(),
+            rate_pct=rate_pct,
+            rate_compounding=rate_compounding,
+            amortization_months=remaining,
+            monthly_payment=self.monthly_payment,
+            message=f"{self.person.name} renewed the mortgage at {rate_pct:g}% for {remaining} payments "
+            f"(${self.monthly_payment:,.2f}/month)",
         )
+        if paid_down > 0:
+            event.details["principal_paydown"] = paid_down
+        self.model.event_log.add(event)
 
     def refinance(
         self,
@@ -1110,6 +1308,7 @@ class Mortgage(Loan):
         adds to the home's cost basis as an improvement and is acquisition debt). The new rate
         is quoted with monthly compounding."""
         self._cash_out_for_improvements = cash_out_for_improvements
+        self._refinance_cash_out = cash_out
         new_principal = super().refinance(
             rate_pct,
             term_months=term_months,
@@ -1152,6 +1351,16 @@ class Mortgage(Loan):
             self.acquisition_cap = None if self.acquisition_cap is None else self.acquisition_cap + cash_out
         else:
             self.acquisition_cap = acquisition_before
+        # Canadian rental tracing: personal cash-out and financed costs do not increase eligible principal.
+        explicit_cash_out = Decimal(str(getattr(self, "_refinance_cash_out", 0.0)))
+        if self.rental_eligible_principal is not None:
+            eligible_before = min(self.rental_eligible_principal, Decimal(str(old_principal)))
+            self.rental_eligible_principal = eligible_before + (explicit_cash_out if improvements else Decimal(0))
+        elif new_principal > old_principal:
+            home = getattr(self, "home", None)
+            if home is not None and home.ontario_rental is not None:
+                eligible_before = Decimal(str(old_principal)) * home.ontario_rental.eligible_interest_fraction
+                self.rental_eligible_principal = eligible_before + (explicit_cash_out if improvements else Decimal(0))
 
     def collect_stats(self):
         self.stat_mortgage_principal = 0.0 if self.person.is_deceased else self.principal

@@ -395,6 +395,10 @@ def _compile_one(builder: "_Builder", timing: EventTiming, event, year: int) -> 
         name = _name(event, f"{person.name}: {action.replace('_', ' ')}")
         return [_life_event(year, name, event, _bridge_transaction, builder, event)]
 
+    if action == "prepay_bridge":
+        name = _name(event, f"{person.name} prepays credit line {event.bridge}")
+        return [_life_event(year, name, event, _prepay_bridge, builder, person, event, stage="post_step")]
+
     if action == "convert_to_roth":
         what = (
             f"${event.amount:,.0f}"
@@ -1099,10 +1103,20 @@ def _renew_mortgage(builder: "_Builder", event: s.MortgageRenewalEvent) -> None:
         builder.model.event_log.add(Event(f"mortgage renewal skipped: {event.home} has no outstanding mortgage"))
         return
     assert event.at.year is not None and event.at.month is not None
+    when = date(event.at.year, event.at.month, 1)
+    if builder.spec.meta.ontario_retirement_tax is not None:
+        from ..canada.funding import require_mortgage_renewal
+
+        require_mortgage_renewal(home.mortgage, when, event)
     new_terms = event.prepayment_privilege
+    remaining_after_paydown = (
+        event.target_principal
+        if event.target_principal is not None
+        else max(0.0, home.mortgage.principal - event.principal_paydown)
+    )
     privilege = (
-        new_terms.resolve(date(event.at.year, event.at.month, 1), home.mortgage.principal)
-        if isinstance(new_terms, s.MortgagePrepaymentPrivilege)
+        new_terms.resolve(when, remaining_after_paydown)
+        if isinstance(new_terms, s.MortgagePrepaymentPrivilege) and remaining_after_paydown > 0
         else new_terms
     )
     home.mortgage.renew(
@@ -1110,6 +1124,9 @@ def _renew_mortgage(builder: "_Builder", event: s.MortgageRenewalEvent) -> None:
         rate_compounding=event.rate_compounding,
         amortization_months=event.amortization_months,
         prepayment_privilege=privilege,
+        principal_paydown=event.principal_paydown,
+        target_principal=event.target_principal,
+        cash_floor=event.cash_floor,
     )
 
 
@@ -1125,11 +1142,21 @@ def _pay_mortgage_at_maturity(builder: "_Builder", event: s.MortgageMaturityEven
     assert event.at.year is not None and event.at.month is not None and event.at.day is not None
     when = date(event.at.year, event.at.month, event.at.day)
     bridge = _owned_bridge(builder, home.person, event.bridge) if event.bridge is not None else None
+    replace_with = _owned_bridge(builder, home.person, event.replace_with) if event.replace_with is not None else None
     if builder.spec.meta.ontario_retirement_tax is not None:
         from ..canada.funding import require_mortgage_payoff
 
-        require_mortgage_payoff(home.mortgage, when, event, bridge)
-    home.mortgage.pay_at_maturity(when, interest_due=event.interest_due, cash_floor=event.cash_floor, bridge=bridge)
+        require_mortgage_payoff(home.mortgage, when, event, bridge, replace_with)
+    home.mortgage.pay_at_maturity(
+        when,
+        interest_due=event.interest_due,
+        cash_floor=event.cash_floor,
+        bridge=bridge,
+        replace_with=replace_with,
+        replace_principal=event.replace_principal,
+        replace_eligible_fraction=event.replace_eligible_fraction,
+        replace_eligible_cap=event.replace_eligible_cap,
+    )
 
 
 def _prepay_mortgage(builder: "_Builder", person, event: s.MortgagePrepaymentEvent) -> None:
@@ -1182,19 +1209,49 @@ def _bridge_transaction(builder: "_Builder", event: s.DrawBridgeEvent | s.RepayB
     from ..debt.bridge import DatedBridgeLine
 
     line = builder.built.items.get(event.bridge)
-    if not isinstance(line, DatedBridgeLine) or line.home.sold or line.person.is_deceased:
+    if not isinstance(line, DatedBridgeLine) or (line.home is not None and line.home.sold) or line.person.is_deceased:
         builder.model.event_log.add(Event(f"bridge transaction skipped: {event.bridge} has no active borrower"))
         return
     assert event.at.year is not None and event.at.month is not None and event.at.day is not None
     when = date(event.at.year, event.at.month, event.at.day)
     if isinstance(event, s.DrawBridgeEvent):
-        line.draw(event.amount, when=when)
+        rental_home = builder.built.items.get(event.rental_home) if event.rental_home is not None else None
+        line.draw(event.amount, when=when, rental_home=rental_home, eligible_principal=event.eligible_principal)
     else:
         if builder.spec.meta.ontario_retirement_tax is not None:
             from ..canada.funding import require_bridge_repayment
 
             require_bridge_repayment(line, when, event)
-        line.repay(when, cash_floor=event.cash_floor)
+        line.repay(when, cash_floor=event.cash_floor, amount=event.amount)
+
+
+def _prepay_bridge(builder: "_Builder", person, event: s.BridgePrepaymentEvent) -> None:
+    from datetime import date
+
+    from ..debt.bridge import DatedBridgeLine
+
+    line = builder.built.items.get(event.bridge)
+    if not isinstance(line, DatedBridgeLine) or line.person is not person:
+        raise ValueError("A credit-line prepayment requires a credit line owned by the borrower")
+    if (line.home is not None and line.home.sold) or line.person.is_deceased or not line.drawn_principal:
+        return
+    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
+    when = date(event.at.year, event.at.month, event.at.day)
+    tax_holdback = None
+    if builder.spec.meta.ontario_retirement_tax is not None:
+        from ..tax.ontario_policy import cash_reserve_for_owner
+
+        tax_holdback = float(cash_reserve_for_owner(person)) if event.reserve_ontario_tax else 0.0
+    cash_floor = event.cash_floor
+    if event.reserve_rrsp_fraction:
+        room = next(
+            (a.room for a in person.canadian_deferred if a.kind == "RRSP" and a.room is not None),
+            None,
+        )
+        if room is not None:
+            policy = getattr(builder.model, "income_tax_policy", None)
+            cash_floor += float(room.planned_contribution(when.year, event.reserve_rrsp_fraction, policy))
+    line.prepay_surplus(when, cash_fraction=event.cash_fraction, cash_floor=cash_floor, tax_holdback=tax_holdback)
 
 
 def _disability(person) -> None:

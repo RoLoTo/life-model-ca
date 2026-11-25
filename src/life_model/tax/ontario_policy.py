@@ -312,6 +312,12 @@ class OntarioRetirementPolicy:
     def record_rental_income(self, when: date, event_id: str, rent: Decimal, costs: Decimal, interest: Decimal) -> None:
         self.rentals[self.validate_event(when, event_id)] = rent, costs, interest
 
+    def record_rental_interest(self, when: date, event_id: str, interest: Decimal) -> None:
+        if interest < 0:
+            raise ValueError("Eligible rental interest cannot be negative")
+        if interest:
+            self.record_rental_income(when, event_id, _ZERO, _ZERO, money(interest))
+
     def record_rental_sale(self, when: date, event_id: str, gain: float) -> None:
         self.rental_sales[self.validate_event(when, event_id)] = money(Decimal(str(gain)))
 

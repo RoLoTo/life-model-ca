@@ -832,10 +832,22 @@ class _SpecChecker:
                         "federal_unsubsidized or plus), or use repayment_plan: standard.",
                         "rap_needs_federal_loan",
                     )
-                if isinstance(debt, s.HomeEquityLine | s.BridgeLine) and debt.home not in home_ids:
+                if isinstance(debt, s.HomeEquityLine) and debt.home not in home_ids:
                     self.error(
                         f"{path}.debts[{j}].home",
                         f"unknown home {debt.home!r} (must be one of this person's homes with an id)",
+                        code="unknown_reference",
+                    )
+                if isinstance(debt, s.BridgeLine) and debt.home is not None and debt.home not in home_ids:
+                    self.error(
+                        f"{path}.debts[{j}].home",
+                        f"unknown home {debt.home!r} (must be one of this person's homes with an id)",
+                        code="unknown_reference",
+                    )
+                if isinstance(debt, s.BridgeLine) and debt.rental_home is not None and debt.rental_home not in home_ids:
+                    self.error(
+                        f"{path}.debts[{j}].rental_home",
+                        f"unknown rental_home {debt.rental_home!r} (must be one of this person's homes with an id)",
                         code="unknown_reference",
                     )
                 if (
@@ -1486,6 +1498,24 @@ class _SpecChecker:
                 bridge = item_ids.get(event.bridge)
                 if bridge is None or bridge[0] != event.person or not isinstance(bridge[2], s.BridgeLine):
                     self.error(f"{path}.bridge", "must be an approved bridge line owned by the borrower")
+            if isinstance(event, s.MortgageMaturityEvent) and event.replace_with is not None:
+                replace_line = item_ids.get(event.replace_with)
+                if (
+                    replace_line is None
+                    or replace_line[0] != event.person
+                    or not isinstance(replace_line[2], s.BridgeLine)
+                ):
+                    self.error(f"{path}.replace_with", "must be an approved credit line owned by the borrower")
+            if isinstance(event, s.DrawBridgeEvent) and event.rental_home is not None:
+                target = item_ids.get(event.rental_home)
+                if target is None or target[0] != event.person or not isinstance(target[2], s.Home):
+                    self.error(f"{path}.rental_home", "must be a home owned by the borrower")
+            if (
+                isinstance(event, s.BridgePrepaymentEvent)
+                and event.reserve_ontario_tax
+                and self.spec.meta.ontario_retirement_tax is None
+            ):
+                self.error(f"{path}.reserve_ontario_tax", "requires the Ontario return policy")
             if isinstance(event, s.AddAccountEvent) and isinstance(event.account, s.ShareSaleReceivableAccount):
                 self.error(f"{path}.account", "use sell_private_shares to create a new unsettled claim")
             if isinstance(event, s.AddAccountEvent) and isinstance(

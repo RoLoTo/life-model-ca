@@ -2070,13 +2070,15 @@ class HomeEquityLine(SpecModel):
 
 
 class BridgeLine(SpecModel):
-    """Approved credit secured by the borrower's home with simple actual-days/365 interest."""
+    """Approved credit line with dated draws, repayments, and optional Canadian rental tracing."""
 
     CORE_CLASS = "DatedBridgeLine"
 
     kind: Literal["bridge_line"]
     id: Identifier | None = _id_field("debt")
-    home: Identifier = spec_field(description="Id of the home securing the line.", core="DatedBridgeLine.home")
+    home: Identifier | None = spec_field(
+        None, description="Id of the home securing the line, if home-secured.", core="DatedBridgeLine.home"
+    )
     name: str | None = spec_field(None, description="Display name.")
     credit_limit: NonNegativeMoney = spec_field(
         description="Maximum drawn principal in whole cents.", unit="USD", multiple_of=0.01, allow_inf_nan=False
@@ -2103,6 +2105,31 @@ class BridgeLine(SpecModel):
         multiple_of=0.01,
         allow_inf_nan=False,
     )
+    rental_home: Identifier | None = spec_field(
+        None,
+        description="Id of the home whose acquisition debt the eligible principal traces to (independent of collateral).",
+        core="DatedBridgeLine.rental_home",
+    )
+    eligible_principal: NonNegativeMoney = spec_field(
+        0.0,
+        description="Portion of opening drawn principal traced to qualifying rental acquisition debt, in whole cents.",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
+    )
+    eligible_accrued_interest: NonNegativeMoney = spec_field(
+        0.0,
+        description="Portion of opening accrued interest earned during active rental periods on eligible principal.",
+        unit="USD",
+        allow_inf_nan=False,
+    )
+    eligible_capitalized_interest: NonNegativeMoney = spec_field(
+        0.0,
+        description="Portion of opening capitalized interest earned during active rental periods (compound_monthly only).",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
+    )
 
     @model_validator(mode="after")
     def _opening(self) -> "BridgeLine":
@@ -2114,6 +2141,16 @@ class BridgeLine(SpecModel):
             raise ValueError("Opening bridge interest requires drawn principal")
         if self.capitalized_interest and (self.interest_mode != "compound_monthly" or not self.drawn_principal):
             raise ValueError("Opening capitalized bridge interest requires compound_monthly with drawn principal")
+        if self.eligible_principal > self.drawn_principal:
+            raise ValueError("Eligible rental principal cannot exceed opening drawn principal")
+        if self.eligible_accrued_interest > self.accrued_interest:
+            raise ValueError("Eligible accrued rental interest cannot exceed opening accrued interest")
+        if self.eligible_capitalized_interest > self.capitalized_interest:
+            raise ValueError("Eligible capitalized rental interest cannot exceed opening capitalized interest")
+        if (
+            self.eligible_principal or self.eligible_accrued_interest or self.eligible_capitalized_interest
+        ) and self.rental_home is None:
+            raise ValueError("Eligible rental debt balances require a traced rental_home")
         return self
 
 
@@ -2171,6 +2208,11 @@ class MortgageRenewalState(SpecModel):
         None, description="Maximum acquisition debt balance (omit if all debt qualifies).", unit="USD"
     )
     grandfathered_cap: NonNegativeMoney = spec_field(0.0, description="Maximum grandfathered debt balance.", unit="USD")
+    rental_eligible_principal: NonNegativeMoney | None = spec_field(
+        None,
+        description="Portion of principal traced to qualifying Canadian rental acquisition debt.",
+        unit="USD",
+    )
 
 
 class Mortgage(_LoanTerms):
@@ -2196,6 +2238,12 @@ class Mortgage(_LoanTerms):
         None,
         description="PMI and acquisition debt state saved alongside the current repayment schedule after renewal.",
         core="Mortgage.renewal_state",
+    )
+    rental_eligible_principal: NonNegativeMoney | None = spec_field(
+        None,
+        description="Optional Canadian rental acquisition principal tracked separately from personal cash-out.",
+        unit="USD",
+        core="Mortgage.rental_eligible_principal",
     )
 
     start_year: Year | None = spec_field(
@@ -4141,7 +4189,7 @@ class RefinanceEvent(EventBase):
 
 
 class MortgageRenewalEvent(EventBase):
-    """Renew a mortgage before the specified month's payment, with no new borrowing or fees."""
+    """Renew a mortgage before the specified month's payment, with optional principal paydown and no new borrowing."""
 
     action: Literal["renew_mortgage"]
     at: At = spec_field(description="Effective month as YYYY-MM or {year, month, day: 1}.")
@@ -4160,11 +4208,32 @@ class MortgageRenewalEvent(EventBase):
         None,
         description="New cap starting at zero usage. Omit to retain the existing cap, or use 'uncapped' to remove it.",
     )
+    principal_paydown: NonNegativeMoney = spec_field(
+        0.0,
+        description="Optional lump-sum principal paid from spendable cash immediately before repricing.",
+        unit="USD",
+        allow_inf_nan=False,
+    )
+    target_principal: NonNegativeMoney | None = spec_field(
+        None,
+        description="Optional remaining principal target at renewal (pays down any excess from spendable cash).",
+        unit="USD",
+        allow_inf_nan=False,
+    )
+    cash_floor: NonNegativeMoney = spec_field(
+        0.0,
+        description="Spendable bank cash protected from renewal paydown withdrawals.",
+        unit="USD",
+        allow_inf_nan=False,
+        validation_alias=AliasChoices("cash_floor", "cash_to_keep"),
+    )
 
     @model_validator(mode="after")
     def _new_usage(self) -> "MortgageRenewalEvent":
         if isinstance(self.prepayment_privilege, MortgagePrepaymentPrivilege) and self.prepayment_privilege.used:
             raise ValueError("A renewal's new prepayment privilege starts with zero usage")
+        if self.target_principal is not None and self.principal_paydown:
+            raise ValueError("Specify at most one of principal_paydown and target_principal on renewal")
         return self
 
     @model_validator(mode="after")
@@ -4178,8 +4247,10 @@ class MortgageRenewalEvent(EventBase):
 class MortgageMaturityEvent(EventBase):
     """Pay the live principal and quoted final interest on the contractual maturity date supplied by the caller.
 
-    The engine accepts the supplied date and bypasses prepayment caps and fees. The Ontario return policy
-    reports a funding gap before settlement. Other households carry the gap as unpaid-bills debt.
+    The engine accepts the supplied date and bypasses prepayment caps and fees. When ``replace_with`` is
+    supplied, up to ``replace_principal`` (default full live principal) is repaid directly from that
+    approved credit line without commingling in bank cash. The Ontario return policy reports a funding gap
+    before settlement. Other households carry the gap as unpaid-bills debt.
     """
 
     action: Literal["pay_mortgage_at_maturity"]
@@ -4197,11 +4268,42 @@ class MortgageMaturityEvent(EventBase):
     bridge: Identifier | None = spec_field(
         None, description="Borrower's approved bridge line. Draw up to its headroom to fund the payoff and cash floor."
     )
+    replace_with: Identifier | None = spec_field(
+        None,
+        description="Borrower's approved credit line directly replacing maturing mortgage principal under ITA s. 20(3).",
+    )
+    replace_principal: NonNegativeMoney | None = spec_field(
+        None,
+        description="Maximum mortgage principal in whole cents to replace directly (default full live principal).",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
+    )
+    replace_eligible_fraction: Annotated[Decimal, Field(ge=0, le=1)] | None = spec_field(
+        None,
+        description="Explicit fraction of directly replaced principal assumed to be qualifying acquisition debt.",
+    )
+    replace_eligible_cap: NonNegativeMoney | None = spec_field(
+        None,
+        description="Optional dollar cap in whole cents on eligible acquisition principal transferred to the replacement line.",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
+    )
 
     @model_validator(mode="after")
     def _full_date(self) -> "MortgageMaturityEvent":
         if self.at.day is None:
             raise ValueError("A mortgage maturity payoff requires a full calendar date")
+        if self.replace_with is None:
+            if (
+                self.replace_principal is not None
+                or self.replace_eligible_fraction is not None
+                or self.replace_eligible_cap is not None
+            ):
+                raise ValueError("Replacement options require replace_with")
+        elif self.replace_eligible_fraction is None:
+            raise ValueError("Direct credit-line replacement requires an explicit replace_eligible_fraction")
         return self
 
 
@@ -4262,16 +4364,34 @@ class BridgeEvent(EventBase):
 
 
 class DrawBridgeEvent(BridgeEvent):
-    """Deposit a dated draw from approved secured credit into bank cash."""
+    """Deposit a dated draw from approved credit into bank cash (personal non-deductible by default)."""
 
     action: Literal["draw_bridge"]
     amount: NonNegativeMoney = spec_field(
         description="Required draw in whole cents.", unit="USD", gt=0, multiple_of=0.01, allow_inf_nan=False
     )
+    rental_home: Identifier | None = spec_field(
+        None, description="Optional rental home id when part or all of the draw is explicitly traced to rental use."
+    )
+    eligible_principal: NonNegativeMoney = spec_field(
+        0.0,
+        description="Explicit qualifying rental-use portion of this draw in whole cents (default 0).",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
+    )
+
+    @model_validator(mode="after")
+    def _eligible_draw(self) -> "DrawBridgeEvent":
+        if self.eligible_principal > self.amount:
+            raise ValueError("Eligible rental draw cannot exceed the draw amount")
+        if self.eligible_principal and self.rental_home is None:
+            raise ValueError("Eligible rental draws require rental_home")
+        return self
 
 
 class RepayBridgeEvent(BridgeEvent):
-    """Repay the bridge from spendable cash.
+    """Repay all or part of a credit line from spendable cash.
 
     The Ontario return policy reports a funding gap before settlement. Other households carry the gap as unpaid-bills debt.
     """
@@ -4285,6 +4405,47 @@ class RepayBridgeEvent(BridgeEvent):
         allow_inf_nan=False,
         validation_alias=AliasChoices("cash_floor", "cash_to_keep"),
     )
+    amount: NonNegativeMoney | None = spec_field(
+        None,
+        description="Optional whole-cent partial repayment amount (omit to pay off the full line).",
+        unit="USD",
+        gt=0,
+        multiple_of=0.01,
+        allow_inf_nan=False,
+    )
+
+
+class BridgePrepaymentEvent(BridgeEvent):
+    """Apply surplus bank cash to a credit line after bills, reserving cash for taxes and RRSP room."""
+
+    action: Literal["prepay_bridge"]
+    cash_fraction: float = spec_field(
+        1.0, description="Fraction of cash above reserves to pay, from zero to one.", ge=0, le=1
+    )
+    cash_floor: NonNegativeMoney = spec_field(
+        0.0,
+        description="Spendable cash to retain in addition to tax and RRSP reserves.",
+        unit="USD",
+        allow_inf_nan=False,
+        validation_alias=AliasChoices("cash_floor", "cash_to_keep"),
+    )
+    reserve_ontario_tax: bool = spec_field(
+        False, description="Protect unpaid and estimated Ontario income tax in addition to the cash floor."
+    )
+    reserve_rrsp_fraction: Decimal | None = spec_field(
+        None,
+        description="Protect this fraction (0 to 1] of the current year's remaining eligible RRSP room in addition "
+        "to the cash floor.",
+        ge=0,
+        le=1,
+    )
+
+    @model_validator(mode="after")
+    def _month_end(self) -> "BridgePrepaymentEvent":
+        when = self.at
+        if when.year is None or when.month is None or when.day != monthrange(when.year, when.month)[1]:
+            raise ValueError("A credit-line prepayment requires the last day of an explicit calendar month")
+        return self
 
 
 class DisabilityEvent(EventBase):
@@ -4349,6 +4510,7 @@ Event = Annotated[
     | HelocDrawEvent
     | DrawBridgeEvent
     | RepayBridgeEvent
+    | BridgePrepaymentEvent
     | DisabilityEvent,
     Field(discriminator="action"),
 ]
@@ -4397,6 +4559,7 @@ EVENT_ACTIONS: tuple[str, ...] = (
     "heloc_draw",
     "draw_bridge",
     "repay_bridge",
+    "prepay_bridge",
     "disability",
 )
 

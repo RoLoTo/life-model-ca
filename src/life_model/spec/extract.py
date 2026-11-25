@@ -1143,18 +1143,26 @@ class _Extractor:
                 )
             )
         for line in person.home_equity_lines:
-            if isinstance(line, DatedBridgeLine) and line.home.sold:
+            if isinstance(line, DatedBridgeLine) and line.home is not None and line.home.sold:
                 continue
-            home_id = getattr(line.home, "spec_id", None) or self.item_ids.get(id(line.home))
-            if home_id is None:
+            home_id = (
+                None if line.home is None else (getattr(line.home, "spec_id", None) or self.item_ids.get(id(line.home)))
+            )
+            if line.home is not None and home_id is None:
                 continue  # its home has no id to reference (or was sold)
             if isinstance(line, DatedBridgeLine):
+                rental_home_id = (
+                    None
+                    if line.rental_home is None or line.rental_home.sold
+                    else (getattr(line.rental_home, "spec_id", None) or self.item_ids.get(id(line.rental_home)))
+                )
+                default_name = f"Bridge on {line.home.name}" if line.home is not None else "Credit line"
                 out.append(
                     s.BridgeLine(
                         kind="bridge_line",
                         id=self.item_id(line),
                         home=home_id,
-                        name=_none_if(line.name, f"Bridge on {line.home.name}"),
+                        name=_none_if(line.name, default_name),
                         credit_limit=line.credit_limit,
                         rate_pct=line.yearly_interest_rate,
                         drawn_principal=float(line.drawn_principal),
@@ -1162,6 +1170,10 @@ class _Extractor:
                         accrued_through=line.accrued_through,
                         interest_mode=line.interest_mode,
                         capitalized_interest=float(line.capitalized_interest),
+                        rental_home=rental_home_id,
+                        eligible_principal=float(line.eligible_principal),
+                        eligible_accrued_interest=float(line.eligible_accrued_interest),
+                        eligible_capitalized_interest=float(line.eligible_capitalized_interest),
                     )
                 )
                 continue
@@ -1212,6 +1224,9 @@ class _Extractor:
                     rate_compounding=m.rate_compounding,
                     prepayment_privilege=privilege,
                     renewal_state=None if renewal_state is None else s.MortgageRenewalState(**asdict(renewal_state)),
+                    rental_eligible_principal=(
+                        None if m.rental_eligible_principal is None else float(m.rental_eligible_principal)
+                    ),
                     **terms,
                 )
             e = home.expenses
@@ -1478,13 +1493,23 @@ class _Extractor:
             if isinstance(source, s.Marriage):
                 continue
             if isinstance(source, s.BridgeEvent) and (line := lines.get(source.bridge)) is not None:
-                if line.home.sold or line.person.is_deceased:
+                if (line.home is not None and line.home.sold) or line.person.is_deceased:
                     continue
                 source = source.model_copy(update={"person": self.pid(line.person)})
             if isinstance(source, s.MortgageMaturityEvent):
                 bridge = lines.get(source.bridge)
-                if bridge is not None and bridge.home.sold:
+                if bridge is not None and bridge.home is not None and bridge.home.sold:
                     source = source.model_copy(update={"bridge": None})
+                replace_line = lines.get(source.replace_with)
+                if replace_line is not None and replace_line.home is not None and replace_line.home.sold:
+                    source = source.model_copy(
+                        update={
+                            "replace_with": None,
+                            "replace_principal": None,
+                            "replace_eligible_fraction": None,
+                            "replace_eligible_cap": None,
+                        }
+                    )
             events.append(source)
         events += [record["event"] for record in self.build_time]
         return _sorted(events)

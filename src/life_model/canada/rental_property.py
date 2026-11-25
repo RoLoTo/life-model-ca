@@ -25,11 +25,14 @@ class OntarioRental:
         factor = (1 + Decimal(str(self.annual_index_pct)) / 100) ** (year - self.started_on.year)
         return money(self.rent_monthly * factor), money(self.operating_cost_monthly * factor)
 
-    def record_month(self, home, mortgage_interest: float) -> Decimal:
+    def record_month(
+        self, home, mortgage_interest: float, *, mortgage_eligible_share: Decimal | None = None
+    ) -> Decimal:
         model = home.model
         on = date(model.year, model.month, 1)
         policy = model.income_tax_policy
-        eligible_interest = money(Decimal(str(mortgage_interest)) * self.eligible_interest_fraction)
+        share = self.eligible_interest_fraction if mortgage_eligible_share is None else mortgage_eligible_share
+        eligible_interest = money(Decimal(str(mortgage_interest)) * share)
         rent, costs = self.month_amounts(on.year)
         policy.record_rental_income(on, f"rental:{home.unique_id}:{on.isoformat()}", rent, costs, eligible_interest)
         home.person.receive_cash(float(rent), source="tenant", kind=FlowKind.OTHER, cause=f"Rent from {home.name}")
@@ -59,3 +62,11 @@ def convert_to_rental(home, *, on: date, market_value: Decimal, rental: OntarioR
     home.home_value = home.cost_basis = float(market_value)
     home.total_improvements = 0.0
     home.ontario_rental = rental
+    if home.mortgage is not None and home.mortgage.principal > 0:
+        principal = Decimal(str(home.mortgage.principal))
+        if home.mortgage.rental_eligible_principal is None:
+            home.mortgage.rental_eligible_principal = principal * rental.eligible_interest_fraction
+        else:
+            home.mortgage.rental_eligible_principal = min(
+                principal, home.mortgage.rental_eligible_principal * rental.eligible_interest_fraction
+            )

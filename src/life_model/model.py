@@ -146,6 +146,7 @@ class EventKind(str, Enum):
     MORTGAGE_RENEWED = "mortgage_renewed"
     MORTGAGE_PAID_AT_MATURITY = "mortgage_paid_at_maturity"
     MORTGAGE_PREPAYMENT = "mortgage_prepayment"
+    BRIDGE_PREPAYMENT = "bridge_prepayment"
     PRIVATE_OPTIONS_EXERCISED = "private_options_exercised"
     PRIVATE_OPTION_EXERCISE_BLOCKED = "private_option_exercise_blocked"
     PRIVATE_OPTIONS_EXPIRED = "private_options_expired"
@@ -187,6 +188,8 @@ EVENT_KIND_DOCS: dict[str, str] = {
     "details: date, principal, interest_due, cash_floor, shortfall_debt, bridge_draw when a bridge is supplied).",
     "mortgage_prepayment": "Month-end cash was applied to mortgage principal (amount: principal paid; "
     "details: date, cash_before, cash_floor, tax_holdback, cash_fraction, requested, limit_remaining when capped).",
+    "bridge_prepayment": "Month-end cash was applied to a dated credit line (amount: total paid; "
+    "details: date, principal_paid, interest_paid, cash_before, cash_floor, tax_holdback, cash_fraction, requested).",
     "private_options_exercised": "Private employee options exercised (details: date, quantity, benefit and cash).",
     "private_option_exercise_blocked": "A planned private option exercise could not proceed (date, quantity, reason).",
     "private_options_expired": "Unused private employee options expired (details: date and quantity).",

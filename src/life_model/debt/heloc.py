@@ -66,7 +66,7 @@ class HomeEquityLine(RevolvingDebt):
             raise ValueError("improvement_balance must be between 0 and balance")
         super().__init__(
             owner,
-            name=name or f"HELOC on {home.name}",
+            name=name or (f"HELOC on {home.name}" if home is not None else "Credit line"),
             credit_limit=credit_limit,
             balance=balance,
             rate_pct=rate_pct,

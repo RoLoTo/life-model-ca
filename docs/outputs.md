@@ -348,6 +348,7 @@ notebook table (`_repr_html_`) shows the life story; detail kinds are kept but n
 | `mortgage_renewed` |  | A mortgage's outstanding principal was repriced (amount: unchanged principal; details: date, rate_pct, rate_compounding, amortization_months, monthly_payment). |
 | `mortgage_paid_at_maturity` |  | A mortgage was paid off (amount: principal plus final interest; details: date, principal, interest_due, cash_floor, shortfall_debt, bridge_draw when a bridge is supplied). |
 | `mortgage_prepayment` |  | Month-end cash was applied to mortgage principal (amount: principal paid; details: date, cash_before, cash_floor, tax_holdback, cash_fraction, requested, limit_remaining when capped). |
+| `bridge_prepayment` |  | Month-end cash was applied to a dated credit line (amount: total paid; details: date, principal_paid, interest_paid, cash_before, cash_floor, tax_holdback, cash_fraction, requested). |
 | `private_options_exercised` |  | Private employee options exercised (details: date, quantity, benefit and cash). |
 | `private_option_exercise_blocked` |  | A planned private option exercise could not proceed (date, quantity, reason). |
 | `private_options_expired` |  | Unused private employee options expired (details: date and quantity). |

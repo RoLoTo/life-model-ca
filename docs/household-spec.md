@@ -35,7 +35,7 @@ error: put what already happened into the starting state (for example a marriage
 
 ## Event actions
 
-`marry`, `divorce`, `retire`, `change_job`, `move`, `buy_home`, `sell_home`, `convert_home_to_ontario_rental`, `record_home_valuation`, `one_time_expense`, `recurring_expense`, `change_spending`, `add_account`, `reserve_cash`, `contribute`, `rrsp_contribute`, `withdraw_registered`, `rrsp_to_rrif`, `ontario_tax_statement`, `charitable_gift`, `corporate_operating_cash`, `corporate_investment_transfer`, `corporate_payroll`, `corporate_pay_dividend`, `corporate_charitable_gift`, `corporate_income_tax`, `sell_private_shares`, `exercise_private_options`, `convert_currency`, `move_foreign_cash`, `stop_contribution`, `change_contribution`, `convert_to_roth`, `claim_social_security`, `die`, `refinance`, `renew_mortgage`, `pay_mortgage_at_maturity`, `prepay_mortgage`, `heloc_draw`, `draw_bridge`, `repay_bridge`, `disability`.
+`marry`, `divorce`, `retire`, `change_job`, `move`, `buy_home`, `sell_home`, `convert_home_to_ontario_rental`, `record_home_valuation`, `one_time_expense`, `recurring_expense`, `change_spending`, `add_account`, `reserve_cash`, `contribute`, `rrsp_contribute`, `withdraw_registered`, `rrsp_to_rrif`, `ontario_tax_statement`, `charitable_gift`, `corporate_operating_cash`, `corporate_investment_transfer`, `corporate_payroll`, `corporate_pay_dividend`, `corporate_charitable_gift`, `corporate_income_tax`, `sell_private_shares`, `exercise_private_options`, `convert_currency`, `move_foreign_cash`, `stop_contribution`, `change_contribution`, `convert_to_roth`, `claim_social_security`, `die`, `refinance`, `renew_mortgage`, `pay_mortgage_at_maturity`, `prepay_mortgage`, `heloc_draw`, `draw_bridge`, `repay_bridge`, `prepay_bridge`, `disability`.
 
 ## HouseholdSpec
 
@@ -50,7 +50,7 @@ A complete household: metadata, optional economy overrides, people, relationship
 | `corporations` | list[[CorporationSpec](#corporationspec)] |  | [] |  | Wholly owned Canadian corporations with separate assets and obligations. |
 | `relationships` | [Relationships](#relationships) |  | {} |  | Marriages. |
 | `withdrawal_order` | list[`"bank"` \\| `"fixed_income"` \\| `"brokerage"` \\| `"roth_basis"` \\| `"pretax"` \\| `"roth_earnings"` \\| `"reserve"` \\| `"tax_free"` \\| `"corporate_dividend"`] (optional) |  | — | `Family.withdrawal_order` | Household payment waterfall: the order sources are drawn to pay bills and taxes, across every member. Each source exactly once, starting with 'bank'. Defaults to bank, fixed_income, brokerage, roth_basis, pretax, roth_earnings, reserve (fixed_income and reserve may be left out: they then take those places). Canadian forecasts may add corporate_dividend to cover monthly bills and dated Ontario tax payments using corporations with shortfall_dividends_from set. |
-| `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [ConvertHomeToOntarioRentalEvent](#converthometoontariorentalevent), [HomeValuationEvent](#homevaluationevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [RRSPContributeEvent](#rrspcontributeevent), [WithdrawRegisteredEvent](#withdrawregisteredevent), [RRSPToRRIFEvent](#rrsptorrifevent), [OntarioTaxStatementEvent](#ontariotaxstatementevent), [CharitableGiftEvent](#charitablegiftevent), [CorporateOperatingCashEvent](#corporateoperatingcashevent), [CorporateInvestmentTransferEvent](#corporateinvestmenttransferevent), [CorporatePayrollEvent](#corporatepayrollevent), [CorporatePayDividendEvent](#corporatepaydividendevent), [CorporateCharitableGiftEvent](#corporatecharitablegiftevent), [CorporateIncomeTaxEvent](#corporateincometaxevent), [SellPrivateSharesEvent](#sellprivatesharesevent), [ExercisePrivateOptionsEvent](#exerciseprivateoptionsevent), [ConvertCurrencyEvent](#convertcurrencyevent), [MoveForeignCashEvent](#moveforeigncashevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
+| `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [ConvertHomeToOntarioRentalEvent](#converthometoontariorentalevent), [HomeValuationEvent](#homevaluationevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [RRSPContributeEvent](#rrspcontributeevent), [WithdrawRegisteredEvent](#withdrawregisteredevent), [RRSPToRRIFEvent](#rrsptorrifevent), [OntarioTaxStatementEvent](#ontariotaxstatementevent), [CharitableGiftEvent](#charitablegiftevent), [CorporateOperatingCashEvent](#corporateoperatingcashevent), [CorporateInvestmentTransferEvent](#corporateinvestmenttransferevent), [CorporatePayrollEvent](#corporatepayrollevent), [CorporatePayDividendEvent](#corporatepaydividendevent), [CorporateCharitableGiftEvent](#corporatecharitablegiftevent), [CorporateIncomeTaxEvent](#corporateincometaxevent), [SellPrivateSharesEvent](#sellprivatesharesevent), [ExercisePrivateOptionsEvent](#exerciseprivateoptionsevent), [ConvertCurrencyEvent](#convertcurrencyevent), [MoveForeignCashEvent](#moveforeigncashevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [BridgePrepaymentEvent](#bridgeprepaymentevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
 | `actuals` | map[integer → [ActualRecords](#actualrecords)] (optional) |  | — |  | What the household's real documents say, by tax year (filed 1040 lines, W-2s, 1099s, statement balances): read by 'life-model reconcile' and the backtest, ignored by the builder. Keep real documents in my-models/ (git-ignored). |
 
 ## Meta
@@ -886,7 +886,7 @@ Builds: `HomeEquityLine`.
 
 ## BridgeLine
 
-Approved credit secured by the borrower's home with simple actual-days/365 interest.
+Approved credit line with dated draws, repayments, and optional Canadian rental tracing.
 
 Builds: `DatedBridgeLine`.
 
@@ -894,7 +894,7 @@ Builds: `DatedBridgeLine`.
 |---|---|---|---|---|---|
 | `kind` | `"bridge_line"` |  | **required** |  |  |
 | `id` | string (optional) |  | — |  | Optional identifier for this debt, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
-| `home` | string |  | **required** | `DatedBridgeLine.home` | Id of the home securing the line. |
+| `home` | string (optional) |  | — | `DatedBridgeLine.home` | Id of the home securing the line, if home-secured. |
 | `name` | string (optional) |  | — |  | Display name. |
 | `credit_limit` | number | USD | **required** |  | Maximum drawn principal in whole cents. |
 | `rate_pct` | number | percent | **required** |  | Annual simple interest rate. |
@@ -903,6 +903,10 @@ Builds: `DatedBridgeLine`.
 | `accrued_through` | date (optional) |  | — |  | Date through which opening interest was calculated. |
 | `interest_mode` | `"simple"` \\| `"compound_monthly"` \\| `"monthly_interest"` |  | `"simple"` |  | Accrual and servicing rule: 'simple' (unserviced), 'compound_monthly' (monthly capitalized), or 'monthly_interest' (monthly interest-only payments). |
 | `capitalized_interest` | number | USD | `0.0` |  | Opening capitalized unpaid interest in whole cents (compound_monthly only). |
+| `rental_home` | string (optional) |  | — | `DatedBridgeLine.rental_home` | Id of the home whose acquisition debt the eligible principal traces to (independent of collateral). |
+| `eligible_principal` | number | USD | `0.0` |  | Portion of opening drawn principal traced to qualifying rental acquisition debt, in whole cents. |
+| `eligible_accrued_interest` | number | USD | `0.0` |  | Portion of opening accrued interest earned during active rental periods on eligible principal. |
+| `eligible_capitalized_interest` | number | USD | `0.0` |  | Portion of opening capitalized interest earned during active rental periods (compound_monthly only). |
 
 ## Home
 
@@ -950,6 +954,7 @@ Builds: `Mortgage`.
 | `rate_compounding` | `"monthly"` \\| `"semiannual"` |  | `"monthly"` | `Mortgage.rate_compounding` | Compounding of the quoted annual rate. Semiannual quotes are converted to the monthly equivalent. |
 | `prepayment_privilege` | [MortgagePrepaymentPrivilege](#mortgageprepaymentprivilege) (optional) |  | — | `Mortgage.prepayment_privilege` | Optional contract cap on lump sums. |
 | `renewal_state` | [MortgageRenewalState](#mortgagerenewalstate) (optional) |  | — | `Mortgage.renewal_state` | PMI and acquisition debt state saved alongside the current repayment schedule after renewal. |
+| `rental_eligible_principal` | number (optional) | USD | — | `Mortgage.rental_eligible_principal` | Optional Canadian rental acquisition principal tracked separately from personal cash-out. |
 | `start_year` | integer (optional) | year | — | `Mortgage.start_date` | Year the loan was originated (prefer origination). Without a balance, a year before the start is taken as an origination in January of that year. |
 | `escrow_monthly` | number (optional) | USD/month | — | `Mortgage.escrow_monthly` | Escrow included in payment_monthly (subtracted: the home's expenses pay tax and insurance). |
 
@@ -980,6 +985,7 @@ Builds: `MortgageRenewalState`.
 | `origination` | string (optional) |  | — |  | Origination month of the PMI schedule, when known. |
 | `acquisition_cap` | number (optional) | USD | — |  | Maximum acquisition debt balance (omit if all debt qualifies). |
 | `grandfathered_cap` | number | USD | `0.0` |  | Maximum grandfathered debt balance. |
+| `rental_eligible_principal` | number (optional) | USD | — |  | Portion of principal traced to qualifying Canadian rental acquisition debt. |
 
 ## HomeExpenses
 
@@ -2045,7 +2051,7 @@ Refinance a mortgage (``debt`` is the home's id) or a car or student loan: a new
 
 ## MortgageRenewalEvent
 
-Renew a mortgage before the specified month's payment, with no new borrowing or fees.
+Renew a mortgage before the specified month's payment, with optional principal paydown and no new borrowing.
 
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
@@ -2060,10 +2066,13 @@ Renew a mortgage before the specified month's payment, with no new borrowing or 
 | `rate_compounding` | `"monthly"` \\| `"semiannual"` |  | `"monthly"` |  | Compounding of the quoted annual rate. |
 | `amortization_months` | integer (optional) | months | — |  | Number of new monthly payments. By default, keep the scheduled number of payments remaining. |
 | `prepayment_privilege` | [MortgagePrepaymentPrivilege](#mortgageprepaymentprivilege) \\| `"uncapped"` (optional) |  | — |  | New cap starting at zero usage. Omit to retain the existing cap, or use 'uncapped' to remove it. |
+| `principal_paydown` | number | USD | `0.0` |  | Optional lump-sum principal paid from spendable cash immediately before repricing. |
+| `target_principal` | number (optional) | USD | — |  | Optional remaining principal target at renewal (pays down any excess from spendable cash). |
+| `cash_floor` | number | USD | `0.0` |  | Spendable bank cash protected from renewal paydown withdrawals. |
 
 ## MortgageMaturityEvent
 
-Pay the live principal and quoted final interest on the contractual maturity date supplied by the caller. The engine accepts the supplied date and bypasses prepayment caps and fees. The Ontario return policy reports a funding gap before settlement. Other households carry the gap as unpaid-bills debt.
+Pay the live principal and quoted final interest on the contractual maturity date supplied by the caller. The engine accepts the supplied date and bypasses prepayment caps and fees. When ``replace_with`` is supplied, up to ``replace_principal`` (default full live principal) is repaid directly from that approved credit line without commingling in bank cash. The Ontario return policy reports a funding gap before settlement. Other households carry the gap as unpaid-bills debt.
 
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
@@ -2077,6 +2086,10 @@ Pay the live principal and quoted final interest on the contractual maturity dat
 | `interest_due` | number | USD | **required** |  | Lender's quoted interest due at payoff. |
 | `cash_floor` | number | USD | `0.0` |  | Spendable bank cash protected from payoff withdrawals. |
 | `bridge` | string (optional) |  | — |  | Borrower's approved bridge line. Draw up to its headroom to fund the payoff and cash floor. |
+| `replace_with` | string (optional) |  | — |  | Borrower's approved credit line directly replacing maturing mortgage principal under ITA s. 20(3). |
+| `replace_principal` | number (optional) | USD | — |  | Maximum mortgage principal in whole cents to replace directly (default full live principal). |
+| `replace_eligible_fraction` | Decimal (optional) |  | — |  | Explicit fraction of directly replaced principal assumed to be qualifying acquisition debt. |
+| `replace_eligible_cap` | number (optional) | USD | — |  | Optional dollar cap in whole cents on eligible acquisition principal transferred to the replacement line. |
 
 ## MortgagePrepaymentEvent
 
@@ -2114,7 +2127,7 @@ Draw on a home equity line: to the bank, or spent on improvements to the home se
 
 ## DrawBridgeEvent
 
-Deposit a dated draw from approved secured credit into bank cash.
+Deposit a dated draw from approved credit into bank cash (personal non-deductible by default).
 
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
@@ -2126,10 +2139,12 @@ Deposit a dated draw from approved secured credit into bank cash.
 | `bridge` | string |  | **required** |  | Id of the borrower's approved bridge line. |
 | `action` | `"draw_bridge"` |  | **required** |  |  |
 | `amount` | number | USD | **required** |  | Required draw in whole cents. |
+| `rental_home` | string (optional) |  | — |  | Optional rental home id when part or all of the draw is explicitly traced to rental use. |
+| `eligible_principal` | number | USD | `0.0` |  | Explicit qualifying rental-use portion of this draw in whole cents (default 0). |
 
 ## RepayBridgeEvent
 
-Repay the bridge from spendable cash. The Ontario return policy reports a funding gap before settlement. Other households carry the gap as unpaid-bills debt.
+Repay all or part of a credit line from spendable cash. The Ontario return policy reports a funding gap before settlement. Other households carry the gap as unpaid-bills debt.
 
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
@@ -2141,6 +2156,25 @@ Repay the bridge from spendable cash. The Ontario return policy reports a fundin
 | `bridge` | string |  | **required** |  | Id of the borrower's approved bridge line. |
 | `action` | `"repay_bridge"` |  | **required** |  |  |
 | `cash_floor` | number | USD | `0.0` |  | Spendable cash protected from repayment. |
+| `amount` | number (optional) | USD | — |  | Optional whole-cent partial repayment amount (omit to pay off the full line). |
+
+## BridgePrepaymentEvent
+
+Apply surplus bank cash to a credit line after bills, reserving cash for taxes and RRSP room.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `bridge` | string |  | **required** |  | Id of the borrower's approved bridge line. |
+| `action` | `"prepay_bridge"` |  | **required** |  |  |
+| `cash_fraction` | number |  | `1.0` |  | Fraction of cash above reserves to pay, from zero to one. |
+| `cash_floor` | number | USD | `0.0` |  | Spendable cash to retain in addition to tax and RRSP reserves. |
+| `reserve_ontario_tax` | boolean |  | `False` |  | Protect unpaid and estimated Ontario income tax in addition to the cash floor. |
+| `reserve_rrsp_fraction` | Decimal (optional) |  | — |  | Protect this fraction (0 to 1] of the current year's remaining eligible RRSP room in addition to the cash floor. |
 
 ## DisabilityEvent
 

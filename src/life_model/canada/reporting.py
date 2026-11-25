@@ -32,10 +32,27 @@ class CanadianPositionDetails:
     rrsp_room: dict[str, Decimal]
     rental_homes: frozenset[str]
     bridge_principal: dict[str, Decimal]
+    bridge_eligible_principal: dict[str, Decimal]
+    mortgage_principal: dict[str, Decimal]
+    mortgage_eligible_principal: dict[str, Decimal]
 
 
 def position_details(household: BuiltHousehold) -> CanadianPositionDetails:
     """Capture quantities, room and other detail outside the month-end balance sheet."""
+    mortgage_principal: dict[str, Decimal] = {}
+    mortgage_eligible: dict[str, Decimal] = {}
+    for key, item in household.items.items():
+        if isinstance(item, Home) and not item.sold and item.mortgage is not None:
+            principal = Decimal(str(item.mortgage.principal)).quantize(Decimal("0.01"))
+            mortgage_principal[key] = principal
+            if item.mortgage.rental_eligible_principal is not None:
+                mortgage_eligible[key] = item.mortgage.rental_eligible_principal.quantize(Decimal("0.01"))
+            elif item.ontario_rental is not None:
+                mortgage_eligible[key] = (principal * item.ontario_rental.eligible_interest_fraction).quantize(
+                    Decimal("0.01")
+                )
+            else:
+                mortgage_eligible[key] = Decimal("0.00")
     return CanadianPositionDetails(
         private_shares={
             key: PrivateSharePosition(item.issued_quantity, item.pool.cad_basis)
@@ -56,6 +73,11 @@ def position_details(household: BuiltHousehold) -> CanadianPositionDetails:
         bridge_principal={
             key: item.drawn_principal for key, item in household.items.items() if isinstance(item, DatedBridgeLine)
         },
+        bridge_eligible_principal={
+            key: item.eligible_principal for key, item in household.items.items() if isinstance(item, DatedBridgeLine)
+        },
+        mortgage_principal=mortgage_principal,
+        mortgage_eligible_principal=mortgage_eligible,
     )
 
 

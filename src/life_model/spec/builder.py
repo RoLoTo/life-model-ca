@@ -1026,7 +1026,7 @@ class _Builder:
 
             return DatedBridgeLine(
                 owner=person,
-                home=self.built.items[debt.home],
+                home=None if debt.home is None else self.built.items[debt.home],
                 credit_limit=debt.credit_limit,
                 rate_pct=debt.rate_pct,
                 name=debt.name,
@@ -1035,6 +1035,10 @@ class _Builder:
                 accrued_through=debt.accrued_through,
                 interest_mode=debt.interest_mode,
                 capitalized_interest=debt.capitalized_interest,
+                rental_home=None if debt.rental_home is None else self.built.items[debt.rental_home],
+                eligible_principal=debt.eligible_principal,
+                eligible_accrued_interest=debt.eligible_accrued_interest,
+                eligible_capitalized_interest=debt.eligible_capitalized_interest,
             )
         raise NotImplementedError(f"debt kind {debt.kind!r} is not supported by the builder")
 
@@ -1054,6 +1058,7 @@ class _Builder:
                 rate_compounding=m.rate_compounding,
                 prepayment_privilege=None if privilege is None else privilege.resolve(as_of, m.original_amount),
                 renewal_state=None if renewal_state is None else MortgageRenewalState(**renewal_state.model_dump()),
+                rental_eligible_principal=m.rental_eligible_principal,
                 **terms,
             )
             self._remember_loan(mortgage, m)
