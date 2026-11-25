@@ -500,11 +500,11 @@ class OntarioRetirementPolicy:
         employment = facts["salary"] + facts["option_benefit"]
         gross += facts.get("reported_interest", D(0)) + facts.get("ei_benefits", D(0))
         gross += facts.get("rental_net_income", D(0))
-        net = max(D(0), gross + employment + facts["included_capital_gain"] - facts["enhanced_cpp"])
+        other_net = gross + employment + facts["included_capital_gain"] - facts["enhanced_cpp"]
         return OntarioTaxInputs(
-            money(net),
+            money(other_net),
             age,
-            money(min(eligible, net)),
+            money(eligible),
             facts["option_deduction"],
             employment,
             facts["base_cpp"],

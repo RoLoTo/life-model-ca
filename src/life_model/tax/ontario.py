@@ -81,8 +81,8 @@ def income_tax(
 ) -> OntarioTax:
     """CAD estimate for the supported T1/ON428 income subset."""
     rates = ontario_rates(year) if projected_rates is None else projected_rates
-    if not 0 <= eligible_pension <= income or age < 18 or rrsp_deduction < 0:
-        raise ValueError("Invalid Ontario taxable income, pension income, age or RRSP deduction")
+    if eligible_pension < 0 or age < 18 or rrsp_deduction < 0:
+        raise ValueError("Invalid Ontario pension income, age or RRSP deduction")
     if noneligible_dividends < 0:
         raise ValueError("Non-eligible dividends cannot be negative")
     if donations < 0:
