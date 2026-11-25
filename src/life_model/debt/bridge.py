@@ -44,6 +44,10 @@ class DatedBridgeLine(HomeEquityLine):
     Securing collateral (``home``, optional) is independent of rental tax tracing
     (``rental_home`` and ``eligible_principal``). Principal repayments reduce eligible
     and non-eligible portions proportionally per CRA Income Tax Folio S3-F6-C1 paragraph 1.43.
+    Ordinary eligible interest on ``eligible_principal`` (ITA s. 20(1)(c)) is deducted on an
+    accrual basis as it accrues during active rental periods; compound interest on unpaid
+    eligible interest (ITA s. 20(1)(d), ``compound_monthly`` only) is tracked in
+    ``eligible_unpaid_compound_interest`` and deducted only when paid.
     """
 
     def __init__(
@@ -63,6 +67,7 @@ class DatedBridgeLine(HomeEquityLine):
         eligible_principal: float | Decimal = _ZERO,
         eligible_accrued_interest: float | Decimal = _ZERO,
         eligible_capitalized_interest: float | Decimal = _ZERO,
+        eligible_unpaid_compound_interest: float | Decimal = _ZERO,
     ):
         if home is not None and (home.person is not owner or home.sold):
             raise ValueError("A bridge line must be secured by the borrower's active home")
@@ -78,6 +83,7 @@ class DatedBridgeLine(HomeEquityLine):
         elig_principal = Decimal(str(eligible_principal))
         elig_interest = Decimal(str(eligible_accrued_interest))
         elig_capitalized = Decimal(str(eligible_capitalized_interest))
+        elig_unpaid_compound = Decimal(str(eligible_unpaid_compound_interest))
         if (
             not limit.is_finite()
             or not principal.is_finite()
@@ -111,8 +117,16 @@ class DatedBridgeLine(HomeEquityLine):
             or elig_capitalized != _cents(elig_capitalized)
         ):
             raise ValueError("Eligible capitalized rental interest must be whole cents within capitalized interest")
-        if (elig_principal or elig_interest or elig_capitalized) and rental_home is None:
-            raise ValueError("Eligible rental debt balances require a traced rental_home")
+        if (
+            not elig_unpaid_compound.is_finite()
+            or not 0 <= elig_unpaid_compound <= elig_capitalized
+            or elig_unpaid_compound != _cents(elig_unpaid_compound)
+        ):
+            raise ValueError(
+                "Eligible unpaid compound interest must be whole cents within eligible capitalized interest"
+            )
+        if elig_principal and rental_home is None:
+            raise ValueError("Eligible rental principal requires a traced rental_home")
         if (principal > 0) != (accrued_through is not None):
             raise ValueError("Supply an accrued-through date exactly when there is opening principal")
         if accrued_through is not None and accrued_through > date(owner.model.year, owner.model.month, 1):
@@ -134,6 +148,9 @@ class DatedBridgeLine(HomeEquityLine):
         self.eligible_principal = elig_principal
         self.eligible_accrued_interest = elig_interest
         self.eligible_capitalized_interest = elig_capitalized
+        self.eligible_unpaid_compound_interest = elig_unpaid_compound
+        self._eligible_accrued_ordinary = elig_interest if interest_mode == "compound_monthly" else _ZERO
+        self._eligible_accrued_compound = _ZERO
         self._rental_interest_seq = 0
 
     def get_available_credit(self) -> float:
@@ -149,33 +166,49 @@ class DatedBridgeLine(HomeEquityLine):
             and (self.eligible_principal > 0 or self.eligible_capitalized_interest > 0)
         )
 
-    def _interest_delta(self, when: date) -> tuple[Decimal, Decimal]:
+    def _interest_delta(self, when: date) -> tuple[Decimal, Decimal, Decimal]:
         if self.accrued_through is None:
-            return _ZERO, _ZERO
+            return _ZERO, _ZERO, _ZERO
         days = (when - self.accrued_through).days
         if days < 0:
             raise ValueError("A bridge transaction cannot precede accrued-through")
         if days == 0:
-            return _ZERO, _ZERO
+            return _ZERO, _ZERO, _ZERO
         rate = Decimal(str(self.yearly_interest_rate)) / 100
         base = self.drawn_principal + self.capitalized_interest
         total_delta = base * rate * days / 365
         if self._rental_is_active():
-            eligible_base = self.eligible_principal + self.eligible_capitalized_interest
-            eligible_delta = eligible_base * rate * days / 365
+            ordinary_delta = self.eligible_principal * rate * days / 365
+            compound_delta = self.eligible_capitalized_interest * rate * days / 365
         else:
-            eligible_delta = _ZERO
-        return total_delta, eligible_delta
+            ordinary_delta = _ZERO
+            compound_delta = _ZERO
+        return total_delta, ordinary_delta, compound_delta
 
     def _interest_at(self, when: date) -> Decimal:
-        total_delta, _ = self._interest_delta(when)
+        total_delta, _, _ = self._interest_delta(when)
         return self.accrued_interest + total_delta
 
+    def _tax_date(self, when: date) -> date:
+        year, month = self.model.year, self.model.month
+        if (when.year, when.month) == (year, month):
+            return when
+        return date(year, month, monthrange(year, month)[1])
+
     def _accrue(self, when: date) -> None:
-        total_delta, eligible_delta = self._interest_delta(when)
+        total_delta, ordinary_delta, compound_delta = self._interest_delta(when)
         interest = self.accrued_interest + total_delta
-        eligible_interest = min(interest, self.eligible_accrued_interest + eligible_delta)
+        eligible_interest = min(interest, self.eligible_accrued_interest + ordinary_delta + compound_delta)
         increment = _cents(interest) - _cents(self.accrued_interest)
+        ordinary_deduction = _ZERO
+        if self.interest_mode == "simple":
+            ordinary_deduction = _cents(eligible_interest) - _cents(self.eligible_accrued_interest)
+        elif self.interest_mode == "compound_monthly":
+            prior_ord = self._eligible_accrued_ordinary
+            new_ord = min(eligible_interest, prior_ord + ordinary_delta)
+            ordinary_deduction = _cents(new_ord) - _cents(prior_ord)
+            self._eligible_accrued_ordinary = new_ord
+            self._eligible_accrued_compound = max(_ZERO, eligible_interest - new_ord)
         self.accrued_interest = interest
         self.eligible_accrued_interest = eligible_interest
         self.accrued_through = when if self.drawn_principal else None
@@ -188,6 +221,8 @@ class DatedBridgeLine(HomeEquityLine):
             cause=f"Bridge interest accrued through {when.isoformat()}",
             agent=self.person,
         )
+        if ordinary_deduction > 0:
+            self._record_rental_interest(self._tax_date(when), ordinary_deduction)
 
     def _record_rental_interest(self, when: date, amount: Decimal) -> None:
         if amount <= 0:
@@ -208,9 +243,12 @@ class DatedBridgeLine(HomeEquityLine):
         if rental_home is None or rental_home.person is not self.person:
             raise ValueError("Eligible rental debt requires a rental home owned by the borrower")
         has_existing = bool(
-            self.eligible_principal or self.eligible_accrued_interest or self.eligible_capitalized_interest
+            self.eligible_principal
+            or self.eligible_accrued_interest
+            or self.eligible_capitalized_interest
+            or self.eligible_unpaid_compound_interest
         )
-        if self.rental_home is not None and self.rental_home is not rental_home and has_existing:
+        if has_existing and self.rental_home is not rental_home:
             raise ValueError("A single credit line cannot mix eligible rental debt from two different homes")
         self.rental_home = rental_home
 
@@ -306,9 +344,9 @@ class DatedBridgeLine(HomeEquityLine):
         year, month = self.model.year, self.model.month
         boundary = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
         prior_billed = _cents(self.accrued_interest)
-        total_delta, eligible_delta = self._interest_delta(boundary)
+        total_delta, ordinary_delta, _ = self._interest_delta(boundary)
         total_interest = _cents(self.accrued_interest + total_delta)
-        eligible_interest = min(total_interest, _cents(self.eligible_accrued_interest + eligible_delta))
+        eligible_interest = min(total_interest, _cents(self.eligible_accrued_interest + ordinary_delta))
         new_interest = total_interest - prior_billed
         self.accrued_interest = _ZERO
         self.eligible_accrued_interest = _ZERO
@@ -327,39 +365,67 @@ class DatedBridgeLine(HomeEquityLine):
             boundary = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
             self._accrue(boundary)
             if self.interest_mode == "compound_monthly":
+                prior_elig_cap = self.eligible_capitalized_interest
                 self.capitalized_interest = _cents(self.capitalized_interest + self.accrued_interest)
                 self.eligible_capitalized_interest = min(
                     self.capitalized_interest,
-                    _cents(self.eligible_capitalized_interest + self.eligible_accrued_interest),
+                    _cents(prior_elig_cap + self.eligible_accrued_interest),
+                )
+                added_elig_cap = self.eligible_capitalized_interest - prior_elig_cap
+                added_compound = max(_ZERO, added_elig_cap - _cents(self._eligible_accrued_ordinary))
+                self.eligible_unpaid_compound_interest = min(
+                    self.eligible_capitalized_interest,
+                    self.eligible_unpaid_compound_interest + added_compound,
                 )
                 self.accrued_interest = _ZERO
                 self.eligible_accrued_interest = _ZERO
+                self._eligible_accrued_ordinary = _ZERO
+                self._eligible_accrued_compound = _ZERO
                 self.balance = float(self.drawn_principal + self.capitalized_interest)
 
     def end_rental_use(self, when: date) -> None:
         """Stop rental-interest accrual on principal when the traced rental property is sold."""
-        if not self.drawn_principal or not self.eligible_principal:
+        if not self.drawn_principal or (not self.eligible_principal and not self.eligible_capitalized_interest):
             return
         self._accrue(when)
         self.eligible_principal = _ZERO
+
+    def _deductible_interest_on_payment(self) -> tuple[Decimal, Decimal, Decimal]:
+        """Return ``(interest_owed, eligible_interest_owed, deductible_interest_owed)`` for a payment."""
+        billed_accrued = _cents(self.accrued_interest)
+        interest_owed = self.capitalized_interest + billed_accrued
+        eligible_accrued_billed = min(billed_accrued, _cents(self.eligible_accrued_interest))
+        eligible_interest_owed = min(interest_owed, self.eligible_capitalized_interest + eligible_accrued_billed)
+        if self.interest_mode == "monthly_interest":
+            deductible_owed = eligible_interest_owed
+        elif self.interest_mode == "simple":
+            deductible_owed = _ZERO
+        else:
+            cur_compound = max(_ZERO, eligible_accrued_billed - _cents(self._eligible_accrued_ordinary))
+            deductible_owed = min(eligible_interest_owed, self.eligible_unpaid_compound_interest + cur_compound)
+        return interest_owed, eligible_interest_owed, deductible_owed
 
     def _apply_payment(
         self, payment: Decimal, *, when: date, preserve_accrued_through: bool = False
     ) -> tuple[Decimal, Decimal]:
         billed_accrued = _cents(self.accrued_interest)
-        interest_owed = self.capitalized_interest + billed_accrued
-        eligible_accrued_billed = min(billed_accrued, _cents(self.eligible_accrued_interest))
-        eligible_interest_owed = min(interest_owed, self.eligible_capitalized_interest + eligible_accrued_billed)
+        interest_owed, eligible_interest_owed, deductible_interest_owed = self._deductible_interest_on_payment()
         interest_paid = min(payment, interest_owed)
         principal_paid = payment - interest_paid
         if interest_paid == interest_owed:
-            eligible_interest_paid = eligible_interest_owed
+            deductible_interest_paid = deductible_interest_owed
             self.capitalized_interest = _ZERO
             self.eligible_capitalized_interest = _ZERO
+            self.eligible_unpaid_compound_interest = _ZERO
             self.accrued_interest = _ZERO
             self.eligible_accrued_interest = _ZERO
+            self._eligible_accrued_ordinary = _ZERO
+            self._eligible_accrued_compound = _ZERO
         elif interest_paid > 0:
             eligible_interest_paid = min(interest_paid, _cents(interest_paid * eligible_interest_owed / interest_owed))
+            deductible_interest_paid = min(
+                eligible_interest_paid, _cents(interest_paid * deductible_interest_owed / interest_owed)
+            )
             cap_paid = min(interest_paid, self.capitalized_interest)
             acc_paid = interest_paid - cap_paid
             remaining_cap = self.capitalized_interest - cap_paid
@@ -369,10 +435,32 @@ class DatedBridgeLine(HomeEquityLine):
             self.accrued_interest = remaining_acc
             self.eligible_capitalized_interest = min(remaining_cap, remaining_elig)
             self.eligible_accrued_interest = min(remaining_acc, remaining_elig - self.eligible_capitalized_interest)
+            if self.interest_mode == "compound_monthly":
+                rem_unpaid_comp = min(
+                    self.eligible_capitalized_interest + self.eligible_accrued_interest,
+                    max(_ZERO, deductible_interest_owed - deductible_interest_paid),
+                )
+                if deductible_interest_owed > 0:
+                    cap_comp_paid = min(
+                        self.eligible_unpaid_compound_interest,
+                        _cents(
+                            deductible_interest_paid * self.eligible_unpaid_compound_interest / deductible_interest_owed
+                        ),
+                    )
+                else:
+                    cap_comp_paid = _ZERO
+                rem_cap_comp = min(
+                    self.eligible_capitalized_interest, self.eligible_unpaid_compound_interest - cap_comp_paid
+                )
+                rem_acc_comp = min(self.eligible_accrued_interest, max(_ZERO, rem_unpaid_comp - rem_cap_comp))
+                rem_cap_comp = min(self.eligible_capitalized_interest, rem_unpaid_comp - rem_acc_comp)
+                self.eligible_unpaid_compound_interest = rem_cap_comp
+                self._eligible_accrued_compound = rem_acc_comp
+                self._eligible_accrued_ordinary = self.eligible_accrued_interest - rem_acc_comp
         else:
-            eligible_interest_paid = _ZERO
-        if eligible_interest_paid > 0:
-            self._record_rental_interest(when, eligible_interest_paid)
+            deductible_interest_paid = _ZERO
+        if deductible_interest_paid > 0:
+            self._record_rental_interest(when, deductible_interest_paid)
         if principal_paid > 0:
             before_principal = self.drawn_principal
             after_principal = before_principal - principal_paid
@@ -504,6 +592,8 @@ class DatedBridgeLine(HomeEquityLine):
         self.person.stat_interest_paid = snap_money(self.person.stat_interest_paid + interest_paid)
         self.drawn_principal = self.capitalized_interest = self.accrued_interest = _ZERO
         self.eligible_principal = self.eligible_capitalized_interest = self.eligible_accrued_interest = _ZERO
+        self.eligible_unpaid_compound_interest = _ZERO
+        self._eligible_accrued_ordinary = self._eligible_accrued_compound = _ZERO
         self.accrued_through = None
         self.balance = 0.0
 
@@ -513,12 +603,9 @@ class DatedBridgeLine(HomeEquityLine):
     def pay_off_from_sale(self, cause: str, *, when: date | None = None) -> float:
         sale_date = when if when is not None else date(self.model.year, self.model.month, 1)
         self._accrue(sale_date)
-        interest_owed = self.capitalized_interest + _cents(self.accrued_interest)
-        eligible_interest_owed = min(
-            interest_owed, self.eligible_capitalized_interest + _cents(self.eligible_accrued_interest)
-        )
-        if eligible_interest_owed > 0:
-            self._record_rental_interest(sale_date, eligible_interest_owed)
+        _, _, deductible_interest_owed = self._deductible_interest_on_payment()
+        if deductible_interest_owed > 0:
+            self._record_rental_interest(sale_date, deductible_interest_owed)
         paid = super().pay_off_from_sale(cause, when=sale_date)
         self._clear()
         return paid

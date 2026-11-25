@@ -1039,6 +1039,7 @@ class _Builder:
                 eligible_principal=debt.eligible_principal,
                 eligible_accrued_interest=debt.eligible_accrued_interest,
                 eligible_capitalized_interest=debt.eligible_capitalized_interest,
+                eligible_unpaid_compound_interest=debt.eligible_unpaid_compound_interest,
             )
         raise NotImplementedError(f"debt kind {debt.kind!r} is not supported by the builder")
 

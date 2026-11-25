@@ -2130,6 +2130,13 @@ class BridgeLine(SpecModel):
         multiple_of=0.01,
         allow_inf_nan=False,
     )
+    eligible_unpaid_compound_interest: NonNegativeMoney = spec_field(
+        0.0,
+        description="Portion of opening capitalized interest representing unpaid compound interest (ITA s. 20(1)(d), deductible when paid; compound_monthly only).",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
+    )
 
     @model_validator(mode="after")
     def _opening(self) -> "BridgeLine":
@@ -2147,10 +2154,10 @@ class BridgeLine(SpecModel):
             raise ValueError("Eligible accrued rental interest cannot exceed opening accrued interest")
         if self.eligible_capitalized_interest > self.capitalized_interest:
             raise ValueError("Eligible capitalized rental interest cannot exceed opening capitalized interest")
-        if (
-            self.eligible_principal or self.eligible_accrued_interest or self.eligible_capitalized_interest
-        ) and self.rental_home is None:
-            raise ValueError("Eligible rental debt balances require a traced rental_home")
+        if self.eligible_unpaid_compound_interest > self.eligible_capitalized_interest:
+            raise ValueError("Eligible unpaid compound interest cannot exceed eligible capitalized interest")
+        if self.eligible_principal and self.rental_home is None:
+            raise ValueError("Eligible rental principal requires a traced rental_home")
         return self
 
 

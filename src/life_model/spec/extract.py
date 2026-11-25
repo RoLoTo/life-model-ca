@@ -1174,6 +1174,7 @@ class _Extractor:
                         eligible_principal=float(line.eligible_principal),
                         eligible_accrued_interest=float(line.eligible_accrued_interest),
                         eligible_capitalized_interest=float(line.eligible_capitalized_interest),
+                        eligible_unpaid_compound_interest=float(line.eligible_unpaid_compound_interest),
                     )
                 )
                 continue

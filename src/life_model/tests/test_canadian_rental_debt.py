@@ -615,12 +615,28 @@ def test_pre_conversion_snapshot_resume_preserves_tracing_and_matches_continuous
     assert results["yaml"] == results["continuous"]
 
 
-def test_compound_monthly_and_simple_modes_record_eligible_interest_on_payment():
-    """Compound-monthly (ITA s. 20(1)(d)) and simple modes record eligible rental interest when paid."""
+def test_compound_monthly_and_simple_modes_separate_accrued_ordinary_from_paid_compound_interest():
+    """Ordinary eligible interest deducts as accrued (s. 20(1)(c)); compound interest deducts when paid (s. 20(1)(d))."""
     for mode in ("simple", "compound_monthly"):
         spec = _rental_base_spec(bank_balance=250000, mortgage_balance=100000)
         spec["meta"]["end_year"] = 2028
-        spec["people"][0]["debts"] = [
+        owner = spec["people"][0]
+        owner["accounts"].append(
+            {
+                "kind": "rrsp",
+                "id": "rrsp",
+                "balance": 0,
+                "growth_pct": 0,
+                "owner_birth": "1967-01-01",
+                "convert_at_maturity": True,
+            }
+        )
+        owner["rrsp_room"] = {
+            "available": 0,
+            "deduction_limits": {2027: 0},
+            "annual_dollar_limits": {2028: 35000},
+        }
+        owner["debts"] = [
             {
                 "kind": "bridge_line",
                 "id": "rental-loc",
@@ -655,19 +671,114 @@ def test_compound_monthly_and_simple_modes_record_eligible_interest_on_payment()
         ]
         model = build(spec)
         model.run()
-        # No cash interest paid in 2027; all eligible interest paid on 2028-03-01 sale payoff.
         ret2027 = model.income_tax_policy.returns[2027].working_income
         ret2028 = model.income_tax_policy.returns[2028].working_income
-        assert ret2027["rental_eligible_interest"] == D(0)
-        # 1 full year of active rental (Mar 1 2027 -> Mar 1 2028 = 366 days in leap year 2028) at 6% on $100k.
+        # Mar 1 -> Dec 31, 2027 (306 days) ordinary eligible interest at 6% on $100k = $5,030.14 in BOTH modes.
+        ordinary_2027 = _cents(D(100000) * D("0.06") * 306 / 365)
+        assert ordinary_2027 == D("5030.14")
+        assert ret2027["rental_eligible_interest"] == ordinary_2027
+        # Dynamic 2028 RRSP room reflects 2027 net rental income AFTER the $5,030.14 ordinary interest accrual.
+        assert position_details(model.household).rrsp_room["rrsp"] == _cents(ret2027["rental_net_income"] * D("0.18"))
+        # 2028 active rental (Jan 1 -> Mar 1 = 60 days in leap year 2028): ordinary = $986.30 (exact 366d total = $6,016.44).
         simple_1yr = _cents(D(100000) * D("0.06") * 366 / 365)
         if mode == "simple":
-            assert ret2028["rental_eligible_interest"] == simple_1yr
+            # Ordinary interest already deducted on accrual; no double deduction at payoff.
+            assert ret2027["rental_eligible_interest"] + ret2028["rental_eligible_interest"] == simple_1yr
         else:
-            # Compound monthly exceeds simple interest over the same active rental period, and excludes Jan-Feb 2027.
-            assert ret2028["rental_eligible_interest"] > simple_1yr + D(150)
-            assert ret2028["rental_eligible_interest"] < simple_1yr + D(220)
+            # 2028 deducts 2028 ordinary accrual PLUS all unpaid 20(1)(d) compound interest paid on 2028-03-01 sale.
+            total_claimed = ret2027["rental_eligible_interest"] + ret2028["rental_eligible_interest"]
+            assert total_claimed > simple_1yr + D(150)
+            assert total_claimed < simple_1yr + D(220)
         assert_conservation(model, monthly=True)
+
+
+def test_unsecured_deferred_interest_post_sale_snapshot_round_trips_and_deducts_compound_on_payment():
+    """Post-sale snapshots preserve historical unpaid eligible interest without requiring an active rental_home."""
+    for mode in ("simple", "compound_monthly"):
+        spec = _rental_base_spec(bank_balance=250000, mortgage_balance=100000)
+        spec["meta"]["end_year"] = 2028
+        spec["people"][0]["debts"] = [
+            {
+                "kind": "bridge_line",
+                "id": "loc",
+                "home": None,
+                "credit_limit": 150000,
+                "rate_pct": 6.0,
+                "interest_mode": mode,
+            }
+        ]
+        spec["events"] = [
+            {
+                "action": "pay_mortgage_at_maturity",
+                "id": "replace",
+                "person": "owner",
+                "home": "old-home",
+                "at": at(2027, 1, 28),
+                "interest_due": 0.0,
+                "replace_with": "loc",
+                "replace_eligible_fraction": 1,
+            },
+            _convert_event(2027, 3, eligible_interest_fraction=1),
+            {
+                "action": "sell_home",
+                "id": "sale",
+                "person": "owner",
+                "home": "old-home",
+                "at": at(2028, 2, 15),
+                "canadian_rental_sale": True,
+                "selling_cost_pct": 0,
+                "selling_cost_fixed": 0,
+            },
+            {
+                "action": "repay_bridge",
+                "id": "repay-later",
+                "person": "owner",
+                "bridge": "loc",
+                "at": at(2028, 6, 15),
+                "cash_floor": 10000.0,
+            },
+        ]
+        continuous = build_household(spec_of(spec), config=fixture_config(), collect="month")
+        for _ in range(14):  # Through end of Feb 2028 (rental sold 2028-02-15; unsecured loc still open).
+            continuous.model.step()
+        line = continuous.items["loc"]
+        assert line.eligible_principal == D(0)
+        assert continuous.model.income_tax_policy.returns[2027].working_income["rental_eligible_interest"] == D(
+            "5030.14"
+        )
+        snapshot = spec_from_model(continuous.model)
+        saved_line = snapshot.people[0].debts[0]
+        assert saved_line.rental_home is None
+        assert saved_line.eligible_principal == 0.0
+        if mode == "simple":
+            assert saved_line.eligible_accrued_interest > 5700
+            assert saved_line.eligible_unpaid_compound_interest == 0.0
+        else:
+            assert saved_line.eligible_capitalized_interest > 5900
+            assert saved_line.eligible_unpaid_compound_interest > 150
+        assert validate_spec(snapshot, config=fixture_config()) == []
+
+        # Track remaining 2028 rental deductions from Mar 2028 through year-end across continuous vs JSON/YAML resume.
+        prior_2028 = continuous.model.income_tax_policy.working_income(2028)["rental_eligible_interest"]
+        expected_compound = line.eligible_unpaid_compound_interest
+        for fmt in ("json", "yaml"):
+            reloaded = loads(dumps(snapshot, fmt), fmt)
+            resumed = build_household(reloaded, config=fixture_config(), collect="month")
+            resumed.model.run()
+            assert_conservation(resumed.model, monthly=True)
+            resumed_2028 = resumed.model.income_tax_policy.returns[2028].working_income.get(
+                "rental_eligible_interest", D(0)
+            )
+            assert resumed_2028 == expected_compound
+            assert resumed.items["loc"].balance == 0.0
+        continuous.model.run()
+        assert_conservation(continuous.model, monthly=True)
+        total_2028 = continuous.model.income_tax_policy.returns[2028].working_income["rental_eligible_interest"]
+        assert total_2028 - prior_2028 == expected_compound
+        if mode == "simple":
+            assert expected_compound == D(0)
+        else:
+            assert expected_compound > D(150)
 
 
 def test_renewal_paydown_insufficient_cash_raises_shortfall_and_round_trips():
@@ -724,3 +835,92 @@ def test_renewal_paydown_insufficient_cash_raises_shortfall_and_round_trips():
     )
     assert_conservation(continuous.model, monthly=True)
     assert_conservation(resumed.model, monthly=True)
+
+
+def test_compound_monthly_partial_interest_payment_deducts_only_proportional_compound_interest():
+    """Partial interest payment on compound_monthly deducts proportional 20(1)(d) compound interest only."""
+    spec = _rental_base_spec(bank_balance=250000, mortgage_balance=100000)
+    spec["meta"]["end_year"] = 2028
+    spec["people"][0]["debts"] = [
+        {
+            "kind": "bridge_line",
+            "id": "loc",
+            "home": "old-home",
+            "credit_limit": 150000,
+            "rate_pct": 6.0,
+            "interest_mode": "compound_monthly",
+        }
+    ]
+    spec["events"] = [
+        {
+            "action": "pay_mortgage_at_maturity",
+            "id": "replace",
+            "person": "owner",
+            "home": "old-home",
+            "at": at(2027, 1, 28),
+            "interest_due": 0.0,
+            "replace_with": "loc",
+            "replace_eligible_fraction": 1,
+        },
+        _convert_event(2027, 3, eligible_interest_fraction=1),
+        # Partial interest-only payment of $2,000 on 2028-01-15 (less than ~$5.7k capitalized interest).
+        {
+            "action": "repay_bridge",
+            "id": "partial-interest",
+            "person": "owner",
+            "bridge": "loc",
+            "at": at(2028, 1, 15),
+            "amount": 2000.0,
+            "cash_floor": 10000.0,
+        },
+        {
+            "action": "sell_home",
+            "id": "sell",
+            "person": "owner",
+            "home": "old-home",
+            "at": at(2028, 3, 1),
+            "canadian_rental_sale": True,
+            "selling_cost_pct": 0,
+            "selling_cost_fixed": 0,
+        },
+    ]
+    model = build(spec)
+    for _ in range(12):  # Complete 2027.
+        model.step()
+    line = model.household.items["loc"]
+    comp_2027 = line.eligible_unpaid_compound_interest
+    assert comp_2027 > D(100)
+    assert model.income_tax_policy.returns[2027].working_income["rental_eligible_interest"] == D("5030.14")
+    model.step()  # Jan 2028: partial interest payment reduces unpaid compound interest proportionally.
+    assert D(0) < line.eligible_unpaid_compound_interest < comp_2027
+    model.run()
+    # Final sale pays off all remaining interest and principal cleanly with strict conservation.
+    assert line.balance == 0.0
+    assert line.eligible_unpaid_compound_interest == D(0)
+    assert_conservation(model, monthly=True)
+
+    # Schema still rejects active eligible_principal without rental_home and compound > capitalized.
+    bad = _rental_base_spec(bank_balance=100000, mortgage_balance=0)
+    bad["people"][0]["debts"] = [
+        {
+            "kind": "bridge_line",
+            "id": "bad-loc",
+            "home": None,
+            "credit_limit": 100000,
+            "rate_pct": 6.0,
+            "drawn_principal": 50000,
+            "accrued_through": "2027-01-01",
+            "eligible_principal": 50000,
+        }
+    ]
+    with pytest.raises(ValidationError, match="traced rental_home"):
+        spec_of(bad)
+    bad["people"][0]["debts"][0].update(
+        interest_mode="compound_monthly",
+        eligible_principal=0,
+        capitalized_interest=500,
+        eligible_capitalized_interest=300,
+        eligible_unpaid_compound_interest=350,
+    )
+    with pytest.raises(ValidationError, match="eligible capitalized interest"):
+        spec_of(bad)

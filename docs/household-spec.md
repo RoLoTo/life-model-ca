@@ -907,6 +907,7 @@ Builds: `DatedBridgeLine`.
 | `eligible_principal` | number | USD | `0.0` |  | Portion of opening drawn principal traced to qualifying rental acquisition debt, in whole cents. |
 | `eligible_accrued_interest` | number | USD | `0.0` |  | Portion of opening accrued interest earned during active rental periods on eligible principal. |
 | `eligible_capitalized_interest` | number | USD | `0.0` |  | Portion of opening capitalized interest earned during active rental periods (compound_monthly only). |
+| `eligible_unpaid_compound_interest` | number | USD | `0.0` |  | Portion of opening capitalized interest representing unpaid compound interest (ITA s. 20(1)(d), deductible when paid; compound_monthly only). |
 
 ## Home
 
