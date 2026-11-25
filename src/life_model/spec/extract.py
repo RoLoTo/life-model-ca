@@ -676,6 +676,7 @@ class _Extractor:
                         name=account.name,
                         balance=account.balance,
                         release_on=account.release_on,
+                        interest_pct=account.interest_pct,
                     )
                 )
         pending_by_holding: dict[int, list[PendingPrivateShares]] = {}

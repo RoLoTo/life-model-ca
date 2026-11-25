@@ -1454,6 +1454,13 @@ class _SpecChecker:
                         "A lump-sum privilege cannot be combined with automatic extra principal",
                     )
             if (
+                isinstance(event, s.BuyHomeEvent)
+                and event.cash_funding is not None
+                and event.cash_funding.reserve_ontario_tax
+                and self.spec.meta.ontario_retirement_tax is None
+            ):
+                self.error(f"{path}.cash_funding.reserve_ontario_tax", "requires the Ontario return policy")
+            if (
                 isinstance(event, s.MortgagePrepaymentEvent)
                 and event.reserve_ontario_tax
                 and self.spec.meta.ontario_retirement_tax is None

@@ -117,3 +117,151 @@ class TestCashFundedClosing(unittest.TestCase):
         )
         self.assertEqual((first.balance, second.balance, owner.debt, home.home_value), (0, 0, 0, 1000.13))
         self.assertAlmostEqual(sum(row.amount for row in built.model.ledger if row.sink == "closing costs"), 2.23)
+
+    def test_reserve_ontario_tax_holds_back_unpaid_tax_at_closing(self):
+        from ..housing.closing import ClosingShortfall
+        from ..spec import validate_spec
+
+        spec = {
+            "spec_version": 1,
+            "meta": {
+                "name": "Synthetic Ontario closing tax reserve",
+                "start_year": 2027,
+                "end_year": 2027,
+                "default_state": "DEFAULT",
+                "ontario_retirement_tax": {
+                    "province": "ON",
+                    "settlement_dates": {2027: "2028-04-30"},
+                    "opening_balances": {2026: {"balance": "25000.00", "settles_on": "2027-04-30"}},
+                },
+                "accepted_warnings": ["cash_not_invested", "no_health_coverage", "zero_growth"],
+            },
+            "withdrawal_order": ["bank", "brokerage", "tax_free", "pretax"],
+            "people": [
+                {
+                    "id": "alex",
+                    "name": "Alex",
+                    "age": 55,
+                    "birth": "1972-01",
+                    "retirement_age": 60,
+                    "spending": {"amount_annual": 0, "growth_pct": 0},
+                    "tfsa_room": {"available": 0, "annual_limits": {}},
+                    "accounts": [
+                        {"kind": "bank", "id": "bank", "balance": 200000, "interest_pct": 0, "primary": True},
+                        {"kind": "tfsa", "id": "tfsa", "balance": 50000, "growth_pct": 0},
+                    ],
+                }
+            ],
+            "events": [
+                {
+                    "id": "closing",
+                    "at": {"year": 2027, "month": 4, "day": 1},
+                    "person": "alex",
+                    "action": "buy_home",
+                    "home": {
+                        "kind": "home",
+                        "id": "new_home",
+                        "purchase_price": 500000,
+                        "expenses": {"property_tax_pct": 0, "insurance_pct": 0},
+                    },
+                    "cash_funding": {
+                        "closing_costs": 20000,
+                        "cash_to_keep": 10000,
+                        "minimum_down_payment": 100000,
+                        "mortgage_limit": 400000,
+                        "term_years": 25,
+                        "rate_pct": 0,
+                        "reserve_ontario_tax": True,
+                    },
+                }
+            ],
+        }
+        built = build_household(spec_of(spec), config=fixture_config(), collect="month")
+        for _ in range(4):
+            built.model.step()
+        owner = built.people["alex"]
+        home = built.items["new_home"]
+        # Available down payment = 200,000 - 20,000 closing - 10,000 floor - 25,000 tax reserve = 145,000.
+        self.assertEqual(home.down_payment, 145000)
+        self.assertEqual(home.mortgage.loan_amount, 355000)
+        # April 30 tax payment is funded from retained bank cash without touching the TFSA.
+        self.assertEqual(built.items["tfsa"].balance, 50000)
+        self.assertEqual(owner.taxes_owed, 0)
+        assert_conservation(built.model, monthly=True)
+
+        # Insufficient cash after holding back tax reports ClosingShortfall.
+        spec["people"][0]["accounts"][0]["balance"] = 150000
+        tight = build_household(spec_of(spec), config=fixture_config(), collect="month")
+        for _ in range(3):
+            tight.model.step()
+        with self.assertRaises(ClosingShortfall) as failure:
+            tight.model.step()
+        self.assertEqual(failure.exception.amount, 5000)
+
+        # Validation rejects reserve_ontario_tax without Ontario retirement tax policy.
+        spec["meta"].pop("ontario_retirement_tax")
+        findings = validate_spec(spec_of(spec), config=fixture_config())
+        self.assertTrue(
+            any(f.level == "error" and f.path == "events[0].cash_funding.reserve_ontario_tax" for f in findings)
+        )
+
+    def test_interest_bearing_cash_reserve_accrues_taxable_interest_and_round_trips(self):
+        from ..spec import spec_from_model
+
+        spec = {
+            "spec_version": 1,
+            "meta": {
+                "name": "Synthetic interest-bearing reserve",
+                "start_year": 2027,
+                "end_year": 2028,
+                "default_state": "DEFAULT",
+                "ontario_retirement_tax": {
+                    "province": "ON",
+                    "freeze_after": 2027,
+                    "settlement_dates": {2027: "2028-04-30", 2028: "2029-04-30"},
+                },
+                "accepted_warnings": ["cash_not_invested", "no_health_coverage", "zero_growth"],
+            },
+            "withdrawal_order": ["bank", "brokerage", "tax_free", "pretax"],
+            "people": [
+                {
+                    "id": "alex",
+                    "name": "Alex",
+                    "age": 55,
+                    "birth": "1972-01",
+                    "retirement_age": 60,
+                    "spending": {"amount_annual": 0, "growth_pct": 0},
+                    "accounts": [{"kind": "bank", "id": "bank", "balance": 50000, "interest_pct": 0, "primary": True}],
+                }
+            ],
+            "events": [
+                {
+                    "id": "earmark",
+                    "at": {"year": 2027, "month": 3, "day": 1},
+                    "person": "alex",
+                    "action": "reserve_cash",
+                    "bank": "bank",
+                    "amount": 36000,
+                    "release_on": "2028-02-01",
+                    "interest_pct": 3.0,
+                }
+            ],
+        }
+        built = build_household(spec_of(spec), config=fixture_config(), collect="month")
+        for _ in range(3):
+            built.model.step()
+        # After March (month 3), 1 month of 3% APR (0.25%/mo) = $90 interest accrued in the reserve.
+        self.assertAlmostEqual(built.items["earmark"].balance, 36090.0, places=2)
+        snapshot = spec_from_model(built.model)
+        (reserve_spec,) = [a for a in snapshot.people[0].accounts if a.kind == "cash_reserve"]
+        self.assertEqual(reserve_spec.interest_pct, 3.0)
+        while built.model.year == 2027 or built.model.month <= 2:
+            built.model.step()
+        # Released Feb 1, 2028 after 11 months of monthly compounding (Mar 2027 through Jan 2028).
+        expected = 36000 * (1 + 0.03 / 12) ** 11
+        self.assertEqual(built.items["earmark"].balance, 0)
+        self.assertAlmostEqual(built.people["alex"].usable_bank_balance, 14000 + expected, places=2)
+        # 10 months of 2027 interest reported as taxable income on the 2027 Ontario return.
+        interest_2027 = 36000 * ((1 + 0.03 / 12) ** 10 - 1)
+        self.assertAlmostEqual(float(built.model.income_tax_policy.returns[2027].tax.income), interest_2027, places=2)
+        assert_conservation(built.model, monthly=True)

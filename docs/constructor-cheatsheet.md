@@ -58,7 +58,7 @@ Each spec entry, the core class the builder constructs, the fields you must give
 | Withholding | `W4 \| FlatWithholding` | — | — |
 | W4Spec | `W4` | — | `multiple_jobs=False`, `dependents_annual=0.0`, `other_income_annual=0.0`, `deductions_annual=0.0`, `extra_monthly=0.0` |
 | BankAccount (`kind: bank`) | `BankAccount` | — | `company='Bank'`, `type='Checking'`, `balance=0.0`, `interest_pct='economy'`, `primary=False`, `reserve=False`, `joint=False` |
-| CashReserveAccount (`kind: cash_reserve`) | `CashReserve` | `balance`, `release_on` | `name='Earmarked cash'` |
+| CashReserveAccount (`kind: cash_reserve`) | `CashReserve` | `balance`, `release_on` | `name='Earmarked cash'`, `interest_pct=0.0` |
 | ForeignCashAccount (`kind: foreign_cash`) | `ForeignCash` | `name`, `currency`, `units`, `cad_mark` | — |
 | PrivateShareAccount (`kind: private_shares`) | `PrivateShareHolding` | `name`, `quantity`, `cad_basis`, `cad_price` | — |
 | PrivateOptionAccount (`kind: private_options`) | `PrivateOptionGrant` | `name`, `holding`, `quantity`, `strike_price`, `currency`, `expires_on` | `exercised=0`, `expired=0` |

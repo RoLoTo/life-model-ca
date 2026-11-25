@@ -493,6 +493,11 @@ def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCas
     if cash_funding is not None:
         from ..housing.closing import cash_funded_down_payment
 
+        tax_holdback = Decimal(0)
+        if cash_funding.reserve_ontario_tax:
+            from ..tax.ontario_policy import cash_reserve_for_owner
+
+            tax_holdback = cash_reserve_for_owner(person)
         price = Decimal(str(home.purchase_price))
         down = cash_funded_down_payment(
             person,
@@ -503,6 +508,7 @@ def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCas
             mortgage_limit=cash_funding.mortgage_limit,
             down_payment_fraction=cash_funding.down_payment_fraction,
             extra_down_payment=cash_funding.extra_down_payment,
+            tax_holdback=tax_holdback,
         )
         principal = price - down
         mortgage = (
@@ -611,6 +617,7 @@ def _reserve_cash(builder: "_Builder", person, event: s.ReserveCashEvent, name: 
         bank=bank,
         schedule=builder.event_schedule(),
         release_on=event.release_on,
+        interest_pct=event.interest_pct,
     )
     if event.id is not None:
         builder.built.items[event.id] = reserve

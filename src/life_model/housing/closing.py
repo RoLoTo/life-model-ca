@@ -68,11 +68,13 @@ def cash_funded_down_payment(
     mortgage_limit: Decimal | float,
     down_payment_fraction: Decimal | float = Decimal(1),
     extra_down_payment: Decimal | float = Decimal(0),
+    tax_holdback: Decimal | float = Decimal(0),
 ) -> Decimal:
     """Calculate a closing down payment from bank cash without moving balances or creating a loan."""
     price = _money(price, "price")
     costs = _money(closing_costs, "closing_costs")
     retained = _money(cash_to_keep, "cash_to_keep")
+    holdback = _money(tax_holdback, "tax_holdback")
     minimum = _money(minimum_down_payment, "minimum_down_payment")
     limit = _money(mortgage_limit, "mortgage_limit")
     extra = _money(extra_down_payment, "extra_down_payment")
@@ -82,7 +84,7 @@ def cash_funded_down_payment(
     if not fraction.is_finite() or not 0 <= fraction <= 1:
         raise ValueError("down_payment_fraction must be between zero and one")
 
-    available = _bank_cash(owner) - costs - retained
+    available = _bank_cash(owner) - costs - retained - holdback
     required = max(minimum, price - limit)
     if available < required:
         raise ClosingShortfall(required - available)

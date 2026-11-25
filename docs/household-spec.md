@@ -376,6 +376,7 @@ Builds: `CashReserve`.
 | `name` | string |  | `"Earmarked cash"` |  | Label used on the ledger. |
 | `balance` | number | USD | **required** |  | Starting earmarked balance. |
 | `release_on` | date |  | **required** |  | Calendar date when the balance becomes available. |
+| `interest_pct` | number | percent | `0.0` |  | Annual interest rate earned while earmarked. |
 
 ## ForeignCashAccount
 
@@ -1477,6 +1478,7 @@ Size a purchase from available bank cash after protecting cash and paying costs.
 | `term_years` | integer | years | **required** |  | Mortgage amortization in years. |
 | `down_payment_fraction` | Decimal |  | `1` |  | Share of available cash to put down after costs and retained cash (0 to 1). |
 | `extra_down_payment` | Decimal | USD | `0` |  | Cash to add to the chosen share, subject to available funds. |
+| `reserve_ontario_tax` | boolean |  | `False` |  | Hold back outstanding and accrued Ontario personal income tax before sizing the down payment. |
 
 ## SellHomeEvent
 
@@ -1606,6 +1608,7 @@ Move cash from an owned bank into an earmark until its scheduled release.
 | `bank` | string |  | **required** |  | Id of the owner's funding bank. |
 | `amount` | number | USD | **required** |  | Cash to earmark. |
 | `release_on` | date |  | **required** |  | Release date in a later month, before ordinary events that day. |
+| `interest_pct` | number | percent | `0.0` |  | Annual interest rate earned while earmarked. |
 
 ## ContributeEvent
 

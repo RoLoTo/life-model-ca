@@ -918,6 +918,9 @@ class CashReserveAccount(SpecModel):
     name: str = spec_field("Earmarked cash", description="Label used on the ledger.")
     balance: float = spec_field(description="Starting earmarked balance.", unit="USD", gt=0, allow_inf_nan=False)
     release_on: date = spec_field(description="Calendar date when the balance becomes available.")
+    interest_pct: NonNegativePercent = spec_field(
+        0.0, description="Annual interest rate earned while earmarked.", unit="percent"
+    )
 
 
 class PrivateShareAccount(SpecModel):
@@ -3384,6 +3387,10 @@ class HomeCashFunding(SpecModel):
     extra_down_payment: ClosingMoney = spec_field(
         Decimal(0), description="Cash to add to the chosen share, subject to available funds.", unit="USD"
     )
+    reserve_ontario_tax: bool = spec_field(
+        False,
+        description="Hold back outstanding and accrued Ontario personal income tax before sizing the down payment.",
+    )
 
 
 class BuyHomeEvent(EventBase):
@@ -3532,6 +3539,9 @@ class ReserveCashEvent(EventBase):
     bank: Identifier = spec_field(description="Id of the owner's funding bank.")
     amount: float = spec_field(description="Cash to earmark.", unit="USD", gt=0, allow_inf_nan=False)
     release_on: date = spec_field(description="Release date in a later month, before ordinary events that day.")
+    interest_pct: NonNegativePercent = spec_field(
+        0.0, description="Annual interest rate earned while earmarked.", unit="percent"
+    )
 
     @model_validator(mode="after")
     def _release_after_funding(self) -> "ReserveCashEvent":

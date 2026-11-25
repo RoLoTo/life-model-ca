@@ -707,6 +707,7 @@ class _Builder:
                 amount=account.balance,
                 schedule=self.event_schedule(),
                 release_on=account.release_on,
+                interest_pct=account.interest_pct,
             )
         if kind == "401k":
             from ..account.job401k import Job401kAccount
