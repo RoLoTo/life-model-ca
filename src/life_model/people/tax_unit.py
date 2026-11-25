@@ -1278,6 +1278,31 @@ class TaxUnit:
             member.stat_housing_costs = snap_money(member.stat_housing_costs + housing_by_member.get(uid, 0.0))
             member.stat_interest_paid = snap_money(member.stat_interest_paid + interest_by_member.get(uid, 0.0))
 
+    def settle_home_month(self, home, *, on: date) -> None:
+        """Settle one month's rent, operating costs, expenses, and mortgage payment for ``home``."""
+        model = self.members[0].model
+        member = home.person
+        housing = home.make_monthly_payment()
+        interest = home.year_payment.get("mortgage_interest", 0.0)
+        bill_lines = self._housing_lines(member, home)
+        if housing > 0:
+            paid_from = {}
+            with model.ledger.caused_by(f"pay {on.isoformat()} housing"):
+                remaining = self._pay_from_banks(housing, paid_from=paid_from)
+                for source in self.withdrawal_order[1:]:
+                    if remaining < 0.005:
+                        break
+                    self._raise_cash(source, remaining, dividend_on=on, reference="monthly-bills")
+                    remaining = self._pay_from_banks(remaining, paid_from=paid_from)
+            shortfall = round_money(max(0.0, remaining))
+            payer = self._payer_account()
+            funding = deque(paid_from.items()) if any(account is not payer for account in paid_from) else None
+            for line in bill_lines:
+                line.post(model.ledger, payer, funding=funding)
+            self.members[0].add_debt(shortfall, to_account=payer, cause=f"unpaid {on.isoformat()} housing")
+        member.stat_housing_costs = snap_money(member.stat_housing_costs + housing)
+        member.stat_interest_paid = snap_money(member.stat_interest_paid + interest)
+
     # ------------------------------------------------------------------
     # Tax payments during the year
     # ------------------------------------------------------------------

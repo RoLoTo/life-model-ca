@@ -924,3 +924,45 @@ def test_compound_monthly_partial_interest_payment_deducts_only_proportional_com
     )
     with pytest.raises(ValidationError, match="eligible capitalized interest"):
         spec_of(bad)
+
+
+def test_month_end_canadian_rental_sale_settles_final_month_rent_and_mortgage_interest():
+    """A month-end Canadian rental sale records that full month's rent, operating cost, and mortgage interest."""
+    spec = _rental_base_spec(bank_balance=300000, mortgage_balance=100000, mortgage_rate=12.0, payment_monthly=1100.0)
+    spec["meta"]["end_year"] = 2027
+    spec["meta"]["ontario_retirement_tax"]["settlement_dates"] = {2027: "2028-04-30"}
+    spec["people"][0]["housing"][0]["mortgage"]["rate_compounding"] = "monthly"
+    spec["events"] = [
+        _convert_event(2027, 1, eligible_interest_fraction=1, rent=3000, cost=1000),
+        {
+            "action": "sell_home",
+            "id": "sale",
+            "person": "owner",
+            "home": "old-home",
+            "at": at(2027, 12, 31),
+            "canadian_rental_sale": True,
+            "selling_cost_pct": 0,
+            "selling_cost_fixed": 0,
+        },
+    ]
+    sold_model = build(spec)
+    sold_model.run()
+
+    control_spec = _rental_base_spec(
+        bank_balance=300000, mortgage_balance=100000, mortgage_rate=12.0, payment_monthly=1100.0
+    )
+    control_spec["meta"]["end_year"] = 2027
+    control_spec["meta"]["ontario_retirement_tax"]["settlement_dates"] = {2027: "2028-04-30"}
+    control_spec["people"][0]["housing"][0]["mortgage"]["rate_compounding"] = "monthly"
+    control_spec["events"] = [_convert_event(2027, 1, eligible_interest_fraction=1, rent=3000, cost=1000)]
+    control_model = build(control_spec)
+    control_model.run()
+
+    sold_ret = sold_model.income_tax_policy.returns[2027].working_income
+    ctrl_ret = control_model.income_tax_policy.returns[2027].working_income
+    assert sold_ret["rental_gross"] == ctrl_ret["rental_gross"] == D("36000.00")
+    assert sold_ret["rental_operating_cost"] == ctrl_ret["rental_operating_cost"] == D("12000.00")
+    assert sold_ret["rental_eligible_interest"] == ctrl_ret["rental_eligible_interest"]
+    assert sold_model.household.items["old-home"].sold
+    assert sold_model.household.items["old-home"].mortgage.principal == 0.0
+    assert_conservation(sold_model, monthly=True)

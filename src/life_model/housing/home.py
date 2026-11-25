@@ -351,6 +351,21 @@ class Home(LifeModelAgent):
         sale_price = self.home_value
         if selling_cost_fixed < 0:
             raise ValueError("Fixed selling costs cannot be negative")
+        tax_policy = getattr(self.model, "income_tax_policy", None)
+        sale_exclusion = getattr(tax_policy, "home_sale_exclusion", None)
+        if canadian_rental_sale:
+            if self.ontario_rental is None or canadian_principal_residence or sale_exclusion is None:
+                raise ValueError("A rental sale requires an active Ontario rental and taxable treatment")
+        elif self.ontario_rental is not None:
+            raise ValueError("Select taxable rental disposition to sell a converted Ontario rental")
+        elif sale_exclusion is None and canadian_principal_residence:
+            raise ValueError("A Canadian principal residence designation requires the Ontario return policy")
+
+        if canadian_rental_sale and sale_date.day == monthrange(sale_date.year, sale_date.month)[1]:
+            from ..people.tax_unit import TaxUnit
+
+            TaxUnit.for_member(self.person).settle_home_month(self, on=sale_date)
+
         selling_costs = sale_price * (selling_cost_percent / 100) + selling_cost_fixed
         mortgage_payoff = self.mortgage.principal if self.mortgage is not None else 0.0
         helocs = [line for line in self.person.home_equity_lines if line.home is self]
@@ -358,20 +373,12 @@ class Home(LifeModelAgent):
 
         cost_basis = self.cost_basis + self.total_improvements
         gain = sale_price - selling_costs - cost_basis
-        tax_policy = getattr(self.model, "income_tax_policy", None)
-        sale_exclusion = getattr(tax_policy, "home_sale_exclusion", None)
         if canadian_rental_sale:
-            if self.ontario_rental is None or canadian_principal_residence or sale_exclusion is None:
-                raise ValueError("A rental sale requires an active Ontario rental and taxable treatment")
             tax_policy.record_rental_sale(sale_date, f"rental-sale:{self.unique_id}", gain)
             exclusion = 0.0
-        elif self.ontario_rental is not None:
-            raise ValueError("Select taxable rental disposition to sell a converted Ontario rental")
         elif sale_exclusion is not None:
             exclusion = sale_exclusion(self.person, gain, canadian_principal_residence)
         else:
-            if canadian_principal_residence:
-                raise ValueError("A Canadian principal residence designation requires the Ontario return policy")
             exclusion = self.section_121_exclusion()
         taxable_gain = max(0.0, gain - exclusion)
         if taxable_gain > 0 and not canadian_rental_sale:
