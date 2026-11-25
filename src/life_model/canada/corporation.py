@@ -57,16 +57,21 @@ class Corporation(LifeModelAgent):
         shareholder=None,
         fiscal_year_end_month: int = 12,
         shortfall_dividends_from: date | None = None,
+        active_tax_rate_pct: Decimal | None = None,
     ):
         if opening_cash < 0:
             raise ValueError("Opening corporate cash cannot be negative")
         if not 1 <= fiscal_year_end_month <= 12:
             raise ValueError("Fiscal year-end month must be between 1 and 12")
+        if active_tax_rate_pct is not None and not 0 <= active_tax_rate_pct <= 100:
+            raise ValueError("Corporate active tax rate must be between 0 and 100 percent")
         super().__init__(model)
         self.name = name
         self.fiscal_year_end_month = fiscal_year_end_month
         self.shareholder = shareholder
         self.shortfall_dividends_from = shortfall_dividends_from
+        self.active_tax_rate_pct = active_tax_rate_pct
+        self.active_tax_rates: dict[int, Decimal | None] = {}
         self.bank = FinancialAccount(self, float(opening_cash))
         self.payables: dict[str, Payable] = {}
         self.operating_balances: dict[str, OperatingBalance] = {}
@@ -311,14 +316,58 @@ class Corporation(LifeModelAgent):
             policy.record_payroll(pay, payday, key)
         return key
 
+    def register_active_tax_rate(self, fiscal_year: int, rate_pct: Decimal | None) -> None:
+        """Record the active-business corporate tax rate scheduled for ``fiscal_year``."""
+        if rate_pct is not None and not 0 <= rate_pct <= 100:
+            raise ValueError("Corporate active tax rate must be between 0 and 100 percent")
+        self.active_tax_rates[fiscal_year] = rate_pct
+
+    def _active_tax_rate_for(self, year: int) -> Decimal | None:
+        if year in self.active_tax_rates:
+            return self.active_tax_rates[year]
+        if self.active_tax_rate_pct is not None:
+            return self.active_tax_rate_pct
+        configured = [
+            (fiscal_year, rate)
+            for fiscal_year, rate in sorted(self.active_tax_rates.items())
+            if rate is not None and fiscal_year <= year
+        ]
+        if configured:
+            return configured[-1][1]
+        return None
+
+    def _projected_income_tax(self, year: int) -> Decimal:
+        """Unaccrued active-business and passive-interest corporate tax for ``year``."""
+        if f"income-tax:{year}" in self.payables:
+            return Decimal(0)
+        operating_profit = self.operating_profit.get(year, Decimal(0))
+        interest = self.investment_interest.get(year, Decimal(0))
+        if operating_profit <= 0 and interest <= 0:
+            return Decimal(0)
+        gifts = self.charitable_gifts.get(year, Decimal(0))
+        gift_deduction = min(gifts, cents(max(Decimal(0), operating_profit + interest) * Decimal(".75")))
+        investment_gifts = min(gift_deduction, max(Decimal(0), interest + min(Decimal(0), operating_profit)))
+        taxable = max(Decimal(0), operating_profit - (gift_deduction - investment_gifts))
+        tax = Decimal(0)
+        if taxable:
+            rate_pct = self._active_tax_rate_for(year)
+            if rate_pct is not None:
+                tax += cents(taxable * rate_pct / 100)
+            else:
+                fiscal_end = fiscal_year_end(year, self.fiscal_year_end_month)
+                fiscal_start = fiscal_year_end(year - 1, self.fiscal_year_end_month) + timedelta(days=1)
+                if not date(2025, 1, 1) <= fiscal_start <= fiscal_end <= date(2027, 12, 31):
+                    fiscal_start, fiscal_end = date(2027, 1, 1), date(2027, 12, 31)
+                tax += ontario_small_business(taxable, start=fiscal_start, end=fiscal_end).total
+        if interest:
+            tax += ontario_ccpc_interest_tax(interest - investment_gifts, operating_profit).total
+        return tax
+
     def dividend_capacity(self, on: date, *, redeem_investments: bool = True) -> Decimal:
-        """Liquid assets available for a dividend after known payables and tax on interest to date."""
+        """Liquid assets available for a dividend after known payables and unaccrued active and passive tax."""
         year = self.fiscal_year(on)
         invested = self.investments.value if redeem_investments and self.investments is not None else Decimal(0)
-        interest = self.investment_interest.get(year, Decimal(0))
-        projected_tax = Decimal(0)
-        if f"income-tax:{year}" not in self.payables:
-            projected_tax = ontario_ccpc_interest_tax(interest, self.operating_profit.get(year, Decimal(0))).total
+        projected_tax = self._projected_income_tax(year)
         return max(Decimal(0), self.cash + invested - self.cash_obligations() - projected_tax)
 
     def pay_dividend(

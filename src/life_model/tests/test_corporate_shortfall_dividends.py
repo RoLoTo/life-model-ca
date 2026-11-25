@@ -198,3 +198,167 @@ def test_shortfall_dividend_requires_a_spendable_destination():
     assert dollars(model.household.items["reserve"].balance) == D(1000)
     assert dollars(model.household.people["owner"].debt) == D(500)
     assert_conservation(model, monthly=True)
+
+
+def test_capped_dividend_reserves_active_tax_passive_tax_and_obligations_without_double_reserving():
+    from datetime import date
+
+    spec = scenario()
+    spec["meta"].update(start="2027-01", end_year=2027)
+    owner = spec["people"][0]
+    owner["spending"]["amount_annual"] = 0
+    owner["accounts"] = [{"kind": "bank", "id": "bank", "balance": 0, "interest_pct": 0}]
+    spec["corporations"][0].update(
+        cash=10000,
+        fiscal_year_end_month=9,
+        payables={"prior": {"amount": 5000, "due": "2027-04-15"}},
+        investment_interest_ytd=1000,
+    )
+    spec["events"] = [
+        {
+            "action": "corporate_operating_cash",
+            "id": "rev",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 1, "day": 15},
+            "amount": 100000,
+        },
+        {
+            "action": "corporate_pay_dividend",
+            "id": "midyear-div",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 3, "day": 1},
+            "amount": 150000,
+            "up_to_available": True,
+        },
+        {
+            "action": "corporate_income_tax",
+            "id": "fy2027-tax",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 9, "day": 30},
+            "settles_on": "2027-11-30",
+            "refund_on": "2027-12-31",
+            "rate_pct": "11.2",
+        },
+    ]
+    model = build(spec)
+    # Step Jan-Mar: cash = 110,000; prior payable = 5,000; active tax = 11,200; passive tax on $1,000 = 501.67.
+    for _ in range(3):
+        model.step()
+    corp = model.household.items["co"]
+    expected_tax = D("11200.00") + D("501.67")
+    expected_div = D("110000.00") - D("5000.00") - expected_tax
+    assert corp.dividends_paid[2027] == expected_div
+    assert corp.cash == D("5000.00") + expected_tax
+    assert corp.dividend_capacity(date(2027, 3, 15)) == D("0.00")
+    # Step through Sep (accrual) -> payable replaces projected tax without double-reserving.
+    for _ in range(6):
+        model.step()
+    assert corp.payables["income-tax:2027"].amount == expected_tax
+    assert corp.cash == expected_tax
+    # Add $2,000 cash after FYE accrual and verify FY2027 tax is reserved once (via payables only).
+    corp.bank.deposit(2000.0)
+    assert corp.dividend_capacity(date(2027, 9, 30)) == D("2000.00")
+    corp.bank.withdraw(2000.0)
+    # Step through Dec (Nov 30 tax settlement, Dec 31 dividend refund) -> settles cleanly without double-reserve.
+    while not model.is_finished:
+        model.step()
+    assert corp.payables["income-tax:2027"].paid
+    assert corp.cash == D("306.67")
+    assert corp.dividend_capacity(date(2027, 9, 30)) == D("306.67")
+    assert_conservation(model, monthly=True)
+
+
+def test_shortfall_dividend_before_fiscal_close_reserves_active_tax():
+    spec = scenario()
+    spec["meta"].update(start="2027-01", end_year=2027)
+    owner = spec["people"][0]
+    owner["spending"]["amount_annual"] = 0
+    owner["accounts"] = [{"kind": "bank", "id": "bank", "balance": 0, "interest_pct": 0}]
+    spec["corporations"][0].update(cash=0, fiscal_year_end_month=9, payables={}, shortfall_dividends_from="2027-01-01")
+    spec["events"] = [
+        {
+            "action": "corporate_operating_cash",
+            "id": "rev",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 1, "day": 15},
+            "amount": 100000,
+        },
+        {
+            "action": "one_time_expense",
+            "id": "bill",
+            "person": "owner",
+            "at": {"year": 2027, "month": 3, "day": 1},
+            "amount": 100000,
+        },
+        {
+            "action": "corporate_income_tax",
+            "id": "fy2027-tax",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 9, "day": 30},
+            "settles_on": "2027-11-30",
+            "rate_pct": "11.2",
+        },
+    ]
+    model = build(spec)
+    for _ in range(3):
+        model.step()
+    corp = model.household.items["co"]
+    assert corp.dividends_paid[2027] == D("88800.00")
+    assert corp.cash == D("11200.00")
+    assert dollars(model.household.people["owner"].debt) == D("11200.00")
+    while not model.is_finished:
+        model.step()
+    assert corp.payables["income-tax:2027"].paid
+    assert corp.cash == D("0.00")
+    assert_conservation(model, monthly=True)
+
+
+def test_dividend_capacity_uses_statutory_small_business_rate_when_rate_pct_omitted():
+    spec = scenario()
+    spec["meta"].update(start_year=2026, start="2026-01", end_year=2026)
+    spec["meta"]["ontario_retirement_tax"].update(freeze_after=2026, settlement_dates={2026: "2027-04-30"})
+    owner = spec["people"][0]
+    owner["age"] = 59
+    owner["spending"]["amount_annual"] = 0
+    owner["accounts"] = [{"kind": "bank", "id": "bank", "balance": 0, "interest_pct": 0}]
+    spec["corporations"][0].update(cash=0, fiscal_year_end_month=12, payables={}, shortfall_dividends_from="2026-01-01")
+    spec["events"] = [
+        {
+            "action": "corporate_operating_cash",
+            "id": "rev",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2026, "month": 1, "day": 15},
+            "amount": 100000,
+        },
+        {
+            "action": "corporate_pay_dividend",
+            "id": "midyear-div",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2026, "month": 6, "day": 1},
+            "amount": 100000,
+            "up_to_available": True,
+        },
+        {
+            "action": "corporate_income_tax",
+            "id": "fy2026-tax",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2026, "month": 12, "day": 31},
+            "settles_on": "2027-02-28",
+        },
+    ]
+    model = build(spec)
+    while not model.is_finished:
+        model.step()
+    corp = model.household.items["co"]
+    accrued = corp.payables["income-tax:2026"].amount
+    assert corp.dividends_paid[2026] == D("100000.00") - accrued
+    assert corp.cash == accrued
+    assert_conservation(model, monthly=True)

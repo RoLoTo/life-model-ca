@@ -741,6 +741,7 @@ def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEven
         action = "payroll"
     else:
         assert isinstance(event, s.CorporateIncomeTaxEvent)
+        corp.register_active_tax_rate(on.year, event.rate_pct)
         due = event.settles_on
         key = f"income-tax:{on.year}"
         refund_on = event.refund_on
