@@ -1289,6 +1289,7 @@ class _Builder:
             shareholder=self.person(spec.shareholder),
             fiscal_year_end_month=spec.fiscal_year_end_month,
             shortfall_dividends_from=spec.shortfall_dividends_from,
+            active_tax_rate_pct=spec.active_tax_rate_pct,
         )
         corp.spec_id = spec.id
         corp.payables = {

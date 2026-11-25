@@ -158,7 +158,8 @@ class _Extractor:
             if not isinstance(corp, Corporation) or corp.shareholder is None:
                 continue
             prior = corp.payroll_ytd.get(self.start)
-            fiscal_year = corp.fiscal_year(date(self.start, self.model.month, 1))
+            opening = date(self.start, self.model.month, 1)
+            fiscal_year = corp.fiscal_year(opening)
             entries.append(
                 s.CorporationSpec(
                     id=self.item_id(corp),
@@ -192,6 +193,7 @@ class _Extractor:
                     },
                     payroll_ytd=s.CorporatePayrollYTD(**asdict(prior)) if prior is not None else None,
                     operating_profit_ytd=corp.operating_profit.get(fiscal_year, Decimal(0)),
+                    active_tax_rate_pct=corp.inherited_active_tax_rate(opening),
                 )
             )
         return _sorted(entries)

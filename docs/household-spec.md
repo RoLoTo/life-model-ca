@@ -1277,6 +1277,7 @@ Builds: `Corporation`.
 | `payables` | map[string → [CorporatePayableSpec](#corporatepayablespec)] |  | {} |  | Opening unpaid obligations keyed by reference. |
 | `payroll_ytd` | [CorporatePayrollYTD](#corporatepayrollytd) (optional) |  | — |  | This corporation's payroll totals before the opening month, if any. |
 | `operating_profit_ytd` | Decimal | CAD | `0` |  | Opening fiscal-year taxable operating profit to date, after eligible payroll. |
+| `active_tax_rate_pct` | Decimal (optional) | percent | — |  | Fallback combined active-business tax rate for unaccrued fiscal-year tax reserves when no corporate_income_tax event specifies a rate. |
 
 ## CorporateInterestAccountSpec
 

@@ -3307,6 +3307,13 @@ class CorporationSpec(SpecModel):
         decimal_places=2,
         unit="CAD",
     )
+    active_tax_rate_pct: Decimal | None = spec_field(
+        None,
+        description="Fallback combined active-business tax rate for unaccrued fiscal-year tax reserves when no corporate_income_tax event specifies a rate.",
+        ge=0,
+        le=100,
+        unit="percent",
+    )
 
 
 # --- Events --------------------------------------------------------------------------------------

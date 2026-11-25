@@ -362,3 +362,121 @@ def test_dividend_capacity_uses_statutory_small_business_rate_when_rate_pct_omit
     assert corp.dividends_paid[2026] == D("100000.00") - accrued
     assert corp.cash == accrued
     assert_conservation(model, monthly=True)
+
+
+def test_corporate_active_tax_rate_round_trips_identically_between_continuous_and_resumed():
+    from datetime import date
+
+    spec = scenario()
+    spec["meta"].update(start="2027-01", end_year=2027)
+    owner = spec["people"][0]
+    owner["spending"]["amount_annual"] = 0
+    owner["accounts"] = [{"kind": "bank", "id": "bank", "balance": 0, "interest_pct": 0}]
+    spec["corporations"][0].update(cash=0, fiscal_year_end_month=9, payables={})
+    spec["events"] = [
+        {
+            "action": "corporate_income_tax",
+            "id": "tax-2027",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 9, "day": 30},
+            "settles_on": "2027-11-30",
+            "rate_pct": "25",
+        },
+        {
+            "action": "corporate_operating_cash",
+            "id": "rev-fy2028",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 10, "day": 15},
+            "amount": 100000,
+        },
+        {
+            "action": "corporate_pay_dividend",
+            "id": "div-fy2028",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 11, "day": 15},
+            "amount": 100000,
+            "up_to_available": True,
+        },
+    ]
+    continuous = build(spec)
+    for _ in range(10):
+        continuous.step()
+    saved = loads(dumps(spec_from_model(continuous), "json"))
+    assert saved.corporations[0].active_tax_rate_pct == D(25)
+    resumed = build(saved.model_dump(mode="json"))
+    # A second extraction before stepping preserves the inherited rate idempotently.
+    assert spec_from_model(resumed).corporations[0].active_tax_rate_pct == D(25)
+    for path in (continuous, resumed):
+        corp = path.household.items["co"]
+        assert corp.dividend_capacity(date(2027, 11, 1)) == D("75000.00")
+        path.step()
+        assert corp.dividends_paid[2028] == D("75000.00")
+        assert corp.cash == D("25000.00")
+        assert_conservation(path, monthly=True)
+
+
+def test_resumed_corporate_rate_yields_to_later_scheduled_tax_events():
+    from datetime import date
+
+    spec = scenario()
+    spec["meta"].update(start="2027-01", end_year=2028)
+    spec["meta"]["ontario_retirement_tax"].update(
+        freeze_after=2027, settlement_dates={2027: "2028-04-30", 2028: "2029-04-30"}
+    )
+    owner = spec["people"][0]
+    owner["spending"]["amount_annual"] = 0
+    owner["accounts"] = [{"kind": "bank", "id": "bank", "balance": 0, "interest_pct": 0}]
+    spec["corporations"][0].update(cash=0, fiscal_year_end_month=9, payables={})
+    spec["events"] = [
+        {
+            "action": "corporate_income_tax",
+            "id": "tax-2027",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2027, "month": 9, "day": 30},
+            "settles_on": "2027-11-30",
+            "rate_pct": "25",
+        },
+        {
+            "action": "corporate_income_tax",
+            "id": "tax-2028",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2028, "month": 9, "day": 30},
+            "settles_on": "2028-11-30",
+            "rate_pct": "15",
+        },
+        {
+            "action": "corporate_operating_cash",
+            "id": "rev-fy2029",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2028, "month": 10, "day": 15},
+            "amount": 100000,
+        },
+        {
+            "action": "corporate_pay_dividend",
+            "id": "div-fy2029",
+            "person": "owner",
+            "corporation": "co",
+            "at": {"year": 2028, "month": 11, "day": 15},
+            "amount": 100000,
+            "up_to_available": True,
+        },
+    ]
+    continuous = build(spec)
+    for _ in range(10):
+        continuous.step()
+    resumed = build(spec_from_model(continuous))
+    for path in (continuous, resumed):
+        while not path.is_finished:
+            path.step()
+        corp = path.household.items["co"]
+        # FY 2029 inherits 15% from FY 2028, not 25% from pre-snapshot FY 2027.
+        assert corp.dividends_paid[2029] == D("85000.00")
+        assert corp.cash == D("15000.00")
+        assert corp.dividend_capacity(date(2028, 12, 31)) == D("0.00")
+        assert_conservation(path, monthly=True)

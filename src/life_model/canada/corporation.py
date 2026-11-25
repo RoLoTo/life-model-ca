@@ -325,8 +325,6 @@ class Corporation(LifeModelAgent):
     def _active_tax_rate_for(self, year: int) -> Decimal | None:
         if year in self.active_tax_rates:
             return self.active_tax_rates[year]
-        if self.active_tax_rate_pct is not None:
-            return self.active_tax_rate_pct
         configured = [
             (fiscal_year, rate)
             for fiscal_year, rate in sorted(self.active_tax_rates.items())
@@ -334,7 +332,22 @@ class Corporation(LifeModelAgent):
         ]
         if configured:
             return configured[-1][1]
-        return None
+        return self.active_tax_rate_pct
+
+    def inherited_active_tax_rate(self, on: date) -> Decimal | None:
+        """Explicit active-business rate carried forward from periods already closed before ``on``."""
+        prior = [
+            (fiscal_year, rate)
+            for fiscal_year, rate in sorted(self.active_tax_rates.items())
+            if rate is not None
+            and (
+                fiscal_year_end(fiscal_year, self.fiscal_year_end_month) < on
+                or f"income-tax:{fiscal_year}" in self.payables
+            )
+        ]
+        if prior:
+            return prior[-1][1]
+        return self.active_tax_rate_pct
 
     def _projected_income_tax(self, year: int) -> Decimal:
         """Unaccrued active-business and passive-interest corporate tax for ``year``."""
