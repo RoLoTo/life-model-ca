@@ -211,7 +211,14 @@ def fund_final_reserve(
         LifeEvents(
             model,
             [
-                LifeEvent(year, "Protect ending targets", protect, year, stage="pre_step", month=1)
+                LifeEvent(
+                    year,
+                    "Protect ending targets",
+                    protect,
+                    year,
+                    stage="pre_step",
+                    month=model.start_month if year == model.start_year else 1,
+                )
                 for year in range(first, model.end_year + 1)
             ],
         )
@@ -223,12 +230,16 @@ def fund_final_reserve(
                 for round_number in range(_FINAL_RESERVE_ROUNDS):
                     need = _final_reserve_need(model, owner, cash_reserve, ending)
                     spare = _source_amount(model, unit, owner, source, end) - ending.sources.get(source, _ZERO)
-                    amount = min(need, spare)
-                    if need < _CENT or amount < _CENT:
+                    if need < _CENT or spare < _CENT:
                         break
                     # Each round is a separate payment, so a repeated corporate dividend has its own reference.
                     reference = f"final-reserve-{round_number + 1}"
-                    if unit._raise_cash(source, float(amount), dividend_on=end, reference=reference) < 0.005:
+                    if (
+                        unit._raise_cash(
+                            source, float(need), dividend_on=end, reference=reference, max_gross=float(spare)
+                        )
+                        < 0.005
+                    ):
                         break
 
     LifeEvents(

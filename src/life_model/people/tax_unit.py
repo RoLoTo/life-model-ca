@@ -750,13 +750,26 @@ class TaxUnit:
             return accounts[0]
         return self.members[0].cash_destination
 
-    def _raise_cash(self, source: str, amount: float, *, dividend_on: date | None = None, reference: str = "") -> float:
+    def _raise_cash(
+        self,
+        source: str,
+        amount: float,
+        *,
+        dividend_on: date | None = None,
+        reference: str = "",
+        max_gross: float | None = None,
+    ) -> float:
         """Move up to ``amount`` from ``source`` (a non-bank waterfall step) into members' banks,
         posting whatever the draw makes taxable. Unsized: the caller accounts for any tax. Returns
         the amount raised."""
         floor = sum(member.withdrawal_floors.get(source, 0.0) for member in self.members)
+        gross_cap: float | None = max_gross
         if floor:
-            amount = min(amount, max(0.0, self._source_total(source, dividend_on) - floor))
+            spare = max(0.0, self._source_total(source, dividend_on) - floor)
+            gross_cap = spare if gross_cap is None else min(gross_cap, spare)
+        if gross_cap is not None:
+            gross_cap = max(0.0, gross_cap)
+            amount = min(amount, gross_cap)
             if amount <= 0:
                 return 0.0
         if source == "corporate_dividend":
@@ -767,14 +780,19 @@ class TaxUnit:
             return fund_shortfall_with_dividends(self.members, dividend_on, amount, reference)
         before = self._source_balances(source)
         raised = 0.0
+        remaining_gross = gross_cap
         for member in self._members_for(source):
-            if raised >= amount:
+            if raised >= amount or (remaining_gross is not None and remaining_gross <= 0):
                 break
             want = amount - raised
             if source == "brokerage":
                 raised += member.withdraw_from_brokerage_accounts(want)
             elif source == "pretax":
-                raised += member.withdraw_from_pretax_accounts(want)
+                member_before = self._source_balance(member, "pretax")
+                raised += member.withdraw_from_pretax_accounts(want, max_gross=remaining_gross)
+                if remaining_gross is not None:
+                    drawn_gross = member_before - self._source_balance(member, "pretax")
+                    remaining_gross = max(0.0, remaining_gross - drawn_gross)
             elif source == "tax_free":
                 raised += member.withdraw_from_tax_free_accounts(want)
             elif source == "roth_basis":

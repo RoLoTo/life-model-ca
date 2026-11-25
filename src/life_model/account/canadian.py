@@ -113,7 +113,7 @@ def withdraw_registered(
         floor = owner.withdrawal_floors.get(source, 0.0)
         if floor:
             accounts = owner.canadian_deferred if deferred else owner.tfsas
-            spare = D(str(sum(a.balance for a in accounts) - floor)).quantize(D(".01"), rounding=ROUND_DOWN)
+            spare = D(str(snap_money(sum(a.balance for a in accounts) - floor))).quantize(D(".01"), rounding=ROUND_DOWN)
             amount = min(amount, max(D(0), spare))
     policy = getattr(account.model, "income_tax_policy", None)
     if deferred and getattr(policy, "owner", None) is not owner:
@@ -176,20 +176,42 @@ def _credit_registered_cash(account, bank, on: date, amount: Decimal, withholdin
     )
 
 
-def draw_registered_cash_after_withholding(owner, amount: float) -> float:
-    """Raise cash for household bills with the statutory withholding estimated per draw."""
+def draw_registered_cash_after_withholding(owner, amount: float, *, max_gross: Decimal | None = None) -> float:
+    """Raise cash for household bills with the statutory withholding estimated per draw.
+
+    Gross withdrawals across the owner's Canadian deferred accounts are capped at ``max_gross`` and
+    at the balance above any protected ``pretax`` withdrawal floor.
+    """
     on = date(owner.model.year, owner.model.month, 1)
     target = D(str(snap_money(amount))).quantize(D(".01"), rounding=ROUND_UP)
+    if target <= 0:
+        return 0.0
+    remaining_gross: Decimal | None = None
+    floor = owner.withdrawal_floors.get("pretax", 0.0)
+    if floor:
+        total_pretax = D(str(snap_money(owner.pretax_account_balance)))
+        spare = (total_pretax - D(str(snap_money(floor)))).quantize(D(".01"), rounding=ROUND_DOWN)
+        remaining_gross = max(D(0), spare)
+    if max_gross is not None:
+        cap = max(D(0), max_gross.quantize(D(".01"), rounding=ROUND_DOWN))
+        remaining_gross = cap if remaining_gross is None else min(remaining_gross, cap)
     received = D(0)
     for account in owner.canadian_deferred:
         if received >= target:
             break
+        available = _whole_cent_balance(account)
+        if remaining_gross is not None:
+            available = min(available, remaining_gross)
+            if available <= 0:
+                break
         exempt = account.remaining_minimum(on.year)
-        gross = cash_draw_for_target(target - received, _whole_cent_balance(account), exempt)
+        gross = cash_draw_for_target(target - received, available, exempt)
         if gross:
             withheld = lump_sum_withholding(gross, exempt)
             _credit_registered_cash(account, None, on, gross, withheld)
             received += gross - withheld
+            if remaining_gross is not None:
+                remaining_gross -= gross
     return float(received)
 
 

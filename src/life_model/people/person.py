@@ -1108,23 +1108,40 @@ class Person(LifeModelAgent):
             remaining -= take
         return penalty
 
-    def withdraw_from_pretax_accounts(self, amount: float) -> float:
+    def withdraw_from_pretax_accounts(self, amount: float, *, max_gross: float | None = None) -> float:
         """Withdraw from pre-tax 401ks, then Traditional IRAs, then HSAs (non-medical), into the bank.
 
         This is the order the tax unit's settlement solver assumes when it sizes a pre-tax draw.
+        When ``max_gross`` is supplied, total gross withdrawals across pre-tax sources stay within it.
 
         Returns:
-            float: Amount actually withdrawn.
+            float: Amount actually withdrawn (net cash deposited to the bank).
         """
-        withdrawn = self.withdraw_from_pretax_401ks(amount)
-        if amount - withdrawn > 0:
-            withdrawn += self.withdraw_from_after_tax_401ks(amount - withdrawn)
-        if amount - withdrawn > 0:
-            withdrawn += self.withdraw_from_traditional_iras(amount - withdrawn)
-        if amount - withdrawn > 0:
-            withdrawn += self.withdraw_from_canadian_deferred(amount - withdrawn)
-        if amount - withdrawn > 0:
-            withdrawn += self.withdraw_from_hsas(amount - withdrawn)
+        cap = max(0.0, max_gross) if max_gross is not None else None
+        limit = amount if cap is None else min(amount, cap)
+        withdrawn = self.withdraw_from_pretax_401ks(limit)
+        if cap is not None:
+            cap = max(0.0, cap - withdrawn)
+        if amount - withdrawn > 0 and (cap is None or cap > 0):
+            take = amount - withdrawn if cap is None else min(amount - withdrawn, cap)
+            got = self.withdraw_from_after_tax_401ks(take)
+            withdrawn += got
+            if cap is not None:
+                cap = max(0.0, cap - got)
+        if amount - withdrawn > 0 and (cap is None or cap > 0):
+            take = amount - withdrawn if cap is None else min(amount - withdrawn, cap)
+            got = self.withdraw_from_traditional_iras(take)
+            withdrawn += got
+            if cap is not None:
+                cap = max(0.0, cap - got)
+        if amount - withdrawn > 0 and (cap is None or cap > 0):
+            before = sum(a.balance for a in self.canadian_deferred)
+            withdrawn += self.withdraw_from_canadian_deferred(amount - withdrawn, max_gross=cap)
+            if cap is not None:
+                cap = max(0.0, cap - (before - sum(a.balance for a in self.canadian_deferred)))
+        if amount - withdrawn > 0 and (cap is None or cap > 0):
+            take = amount - withdrawn if cap is None else min(amount - withdrawn, cap)
+            withdrawn += self.withdraw_from_hsas(take)
         return withdrawn
 
     def early_withdrawal_penalty(self, amount: float) -> float:
@@ -1164,15 +1181,19 @@ class Person(LifeModelAgent):
     def tfsas(self):
         return self.model.registries.tfsas.get_items(self)
 
-    def withdraw_from_canadian_deferred(self, amount: float) -> float:
+    def withdraw_from_canadian_deferred(self, amount: float, *, max_gross: float | None = None) -> float:
         policy = getattr(self.model, "income_tax_policy", None)
         if getattr(policy, "estimate_registered_withholding", False):
+            from decimal import Decimal
+
             from ..account.canadian import draw_registered_cash_after_withholding
 
-            return draw_registered_cash_after_withholding(self, amount)
+            cap = None if max_gross is None else Decimal(str(snap_money(max_gross)))
+            return draw_registered_cash_after_withholding(self, amount, max_gross=cap)
+        draw = amount if max_gross is None else min(amount, max(0.0, max_gross))
         return self._draw_to_bank(
             [(account, account.distribute) for account in self.canadian_deferred],
-            amount,
+            draw,
             FlowKind.WITHDRAWAL,
             "Canadian registered withdrawal",
         )
