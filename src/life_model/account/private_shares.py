@@ -75,6 +75,7 @@ class PrivateShareHolding(FinancialAccount):
             foreign_net=net,
             settlement_fx=settlement_fx,
             settles_on=settles_on,
+            cad_basis=book,
         )
         remaining = money(self.issued_quantity * self.cad_price)
         removed = money(Decimal(str(self.balance))) - remaining
@@ -111,9 +112,16 @@ class ShareSaleReceivable(FinancialAccount):
         foreign_net: Decimal,
         settlement_fx: Decimal | None,
         settles_on: date,
+        cad_basis: Decimal | None = None,
     ):
         _validate_destination(owner, bank, currency, settlement_fx)
-        if balance < 0 or foreign_net <= 0:
+        basis = balance if cad_basis is None else cad_basis
+        if (
+            balance < 0
+            or basis < 0
+            or foreign_net <= 0
+            or (isinstance(bank, ForeignCash) and settlement_fx is None and basis <= 0)
+        ):
             raise ValueError("Invalid opening private share sale receivable")
         self.name = name
         self.bank = bank
@@ -121,7 +129,8 @@ class ShareSaleReceivable(FinancialAccount):
         self.foreign_net = foreign_net
         self.settlement_fx = settlement_fx
         self.settles_on = settles_on
-        self.tax_receivable_fx = balance / foreign_net
+        self.cad_basis = money(basis)
+        self.tax_receivable_fx = self.cad_basis / foreign_net
         self.settled = False
         super().__init__(owner, float(balance))
 
@@ -133,10 +142,10 @@ class ShareSaleReceivable(FinancialAccount):
         _validate_destination(self.owner, self.bank, self.currency, self.settlement_fx)
         cause = f"Settle private share sale {self.name}"
         if isinstance(self.bank, ForeignCash):
-            rate = self.settlement_fx or self.tax_receivable_fx
-            cash = self.bank.move_units(
-                self.foreign_net, on=self.settles_on, cause=cause, tax_value=money(self.foreign_net * rate)
+            tax_value = (
+                money(self.foreign_net * self.settlement_fx) if self.settlement_fx is not None else self.cad_basis
             )
+            cash = self.bank.move_units(self.foreign_net, on=self.settles_on, cause=cause, tax_value=tax_value)
             adjustment = f"Settlement valuation for {self.name}"
             source = "Foreign cash valuation"
         else:

@@ -131,3 +131,101 @@ class PrivateShareSaleTests(unittest.TestCase):
             receipts = [r for r in ledger if r["cause"] == "Settle private share sale sale"]
             self.assertEqual([r["amount"] for r in receipts], [53820])
             self.assertEqual([r["amount"] for r in ledger if r["kind"] == "borrow"], [279180])
+
+    def _usd_settlement_scenario(self, *, conversion_fx, settlement_fx=None, fees="1000"):
+        spec = scenario()
+        spec["meta"].update(start="2026-12", end_year=2027)
+        spec["meta"]["ontario_retirement_tax"]["track_foreign_cash_gains"] = True
+        owner = spec["people"][0]
+        owner["accounts"][0].update(id="bank", balance=10000)
+        owner["accounts"].extend(
+            [
+                {
+                    "id": "usd",
+                    "kind": "foreign_cash",
+                    "name": "USD cash",
+                    "currency": "USD",
+                    "units": 0,
+                    "cad_mark": "1.40",
+                    "opening_cad_basis": 0,
+                },
+                {
+                    "id": "shares",
+                    "kind": "private_shares",
+                    "name": "Synthetic shares",
+                    "quantity": 1000,
+                    "cad_basis": 14000,
+                    "cad_price": 28,
+                },
+            ]
+        )
+        sell = {
+            "id": "sale",
+            "action": "sell_private_shares",
+            "person": "owner",
+            "at": {"year": 2026, "month": 12, "day": 20},
+            "holding": "shares",
+            "bank": "usd",
+            "quantity": 1000,
+            "currency": "USD",
+            "price": 20,
+            "fees": fees,
+            "disposition_fx": "1.40",
+            "settles_on": "2027-01-15",
+        }
+        if settlement_fx is not None:
+            sell["settlement_fx"] = settlement_fx
+        net_units = str(D(20000) - D(fees))
+        spec["events"] = [
+            sell,
+            {
+                "id": "convert",
+                "action": "convert_currency",
+                "person": "owner",
+                "at": {"year": 2027, "month": 2, "day": 1},
+                "bank": "bank",
+                "foreign_cash": "usd",
+                "direction": "sell_foreign",
+                "units": net_units,
+                "cad_rate": conversion_fx,
+            },
+        ]
+        return spec
+
+    def test_usd_settlement_preserves_disposition_cad_basis_at_unchanged_fx_and_round_trip(self):
+        model = build(self._usd_settlement_scenario(conversion_fx="1.40"))
+        model.step()
+        reopened = build(spec_from_model(model))
+        for current in (model, reopened):
+            while not current.is_finished:
+                current.step()
+            assert_conservation(current, monthly=True)
+            ret_2027 = current.income_tax_policy.returns[2027]
+            self.assertEqual(ret_2027.working_income["usd_fx_realized"], D(0))
+            self.assertEqual(ret_2027.working_income["usd_fx_reportable"], D(0))
+            self.assertEqual(ret_2027.working_income["net_capital_gain"], D(0))
+            self.assertEqual(current.income_tax_policy.foreign_cash_pool.cad_basis, D(0))
+            self.assertEqual(current.income_tax_policy.foreign_cash_pool.units, D(0))
+
+    def test_usd_settlement_records_only_post_disposition_fx_change(self):
+        for conversion_fx, expected_realized, expected_reportable in (
+            ("1.45", D("950.00"), D("750.00")),
+            ("1.35", D("-950.00"), D("-750.00")),
+        ):
+            with self.subTest(conversion_fx=conversion_fx):
+                model = build(self._usd_settlement_scenario(conversion_fx=conversion_fx))
+                while not model.is_finished:
+                    model.step()
+                assert_conservation(model, monthly=True)
+                ret_2027 = model.income_tax_policy.returns[2027]
+                self.assertEqual(ret_2027.working_income["usd_fx_realized"], expected_realized)
+                self.assertEqual(ret_2027.working_income["usd_fx_reportable"], expected_reportable)
+
+    def test_usd_settlement_with_explicit_settlement_fx_uses_supplied_basis(self):
+        model = build(self._usd_settlement_scenario(conversion_fx="1.45", settlement_fx="1.42", fees="0"))
+        while not model.is_finished:
+            model.step()
+        assert_conservation(model, monthly=True)
+        ret_2027 = model.income_tax_policy.returns[2027]
+        self.assertEqual(ret_2027.working_income["usd_fx_realized"], D("600.00"))
+        self.assertEqual(ret_2027.working_income["usd_fx_reportable"], D("400.00"))
