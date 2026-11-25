@@ -200,3 +200,68 @@ class TestDatedBridge(unittest.TestCase):
         findings = validate_spec(spec_of(inputs), config=fixture_config())
         self.assertTrue(any(f.level == "error" and f.path.endswith(".accrued_through") for f in findings))
         self.assertTrue(any(f.level == "error" and f.path == "events[3].bridge" for f in findings))
+
+    def test_compound_monthly_capitalizes_interest_and_round_trips(self):
+        inputs = bridge_inputs(receipt_month=12, receipt_day=31)
+        inputs["meta"]["end_year"] = 2027
+        inputs["people"][0]["debts"][0]["interest_mode"] = "compound_monthly"
+        inputs["events"] = [e for e in inputs["events"] if e["action"] in ("draw_bridge", "repay_bridge")]
+        inputs["events"][-1]["at"] = {"year": 2027, "month": 1, "day": 28}
+        inputs["people"][0]["accounts"][0]["balance"] = 100000
+        built = self.build(inputs)
+        # Step 6 months, snapshot and resume, then step to payoff on 2027-01-28 (1 full year).
+        for _ in range(6):
+            built.model.step()
+        line = built.items["line"]
+        self.assertGreater(line.capitalized_interest, 0)
+        self.assertEqual(line.accrued_interest, 0)
+        snapshot = loads(dumps(spec_from_model(built.model), "json"))
+        self.assertEqual(snapshot.people[0].debts[0].interest_mode, "compound_monthly")
+        self.assertGreater(snapshot.people[0].debts[0].capitalized_interest, 0)
+        resumed = build_household(snapshot, config=fixture_config(), collect="month")
+        for run in (built, resumed):
+            for _ in range(7):
+                run.model.step()
+            l_done = run.items["line"]
+            self.assertEqual(l_done.balance, 0)
+            # 1 year compounded monthly at 5.2% exceeds simple 5.2% ($2,782.00) and matches ~5.326% EAR.
+            simple_one_year = 53500 * 0.052
+            self.assertGreater(l_done.interest_paid_this_year, simple_one_year + 60)
+            self.assertLess(l_done.interest_paid_this_year, simple_one_year + 80)
+            assert_conservation(run.model, monthly=True)
+
+    def test_monthly_interest_servicing_pays_interest_monthly_and_keeps_principal_flat(self):
+        inputs = bridge_inputs(receipt_month=2, receipt_day=5)
+        inputs["meta"]["end_year"] = 2027
+        inputs["people"][0]["housing"][0].pop("mortgage", None)
+        inputs["people"][0]["debts"][0]["interest_mode"] = "monthly_interest"
+        inputs["events"] = [e for e in inputs["events"] if e["action"] in ("draw_bridge", "repay_bridge")]
+        inputs["events"][-1]["at"] = {"year": 2027, "month": 1, "day": 28}
+        inputs["people"][0]["accounts"][0]["balance"] = 100000
+        built = self.build(inputs)
+        # Step 1 month (Jan 2026): draw 53,500 on Jan 28 -> 4 days interest paid in Jan bills, balance stays 53,500.
+        built.model.step()
+        line = built.items["line"]
+        self.assertEqual(line.balance, 53500.0)
+        self.assertEqual(line.drawn_principal, Decimal(53500))
+        self.assertEqual(line.accrued_interest, 0)
+        self.assertEqual(line.accrued_through, date(2026, 2, 1))
+        jan_interest = float(
+            (Decimal(53500) * Decimal("0.052") * 4 / 365).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        )
+        self.assertAlmostEqual(line.interest_paid_this_year, jan_interest, places=2)
+        self.assertAlmostEqual(built.items["cash"].balance, 100000 + 53500 - jan_interest, places=2)
+        snapshot = loads(dumps(spec_from_model(built.model), "yaml"), "yaml")
+        self.assertEqual(snapshot.people[0].debts[0].interest_mode, "monthly_interest")
+        resumed = build_household(snapshot, config=fixture_config(), collect="month")
+        for run in (built, resumed):
+            for _ in range(12):
+                run.model.step()
+            l_done = run.items["line"]
+            self.assertEqual(l_done.balance, 0)
+            self.assertEqual(run.people["alex"].debt, 0)
+            # Full-year interest paid monthly in cash equals 5.2% on $53,500 (~$2,782.00).
+            if run is built:
+                total_interest = sum(l_done.stat_interest_payment_history)
+                self.assertAlmostEqual(total_interest, 53500 * 0.052, delta=0.10)
+            assert_conservation(run.model, monthly=True)

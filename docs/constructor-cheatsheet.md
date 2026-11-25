@@ -80,7 +80,7 @@ Each spec entry, the core class the builder constructs, the fields you must give
 | StudentLoan (`kind: student`) | `StudentLoan` | `rate_pct` | `extra_principal_monthly=0.0`, `schedule='contract'`, `loan_type='unknown'`, `school='School'`, `in_deferment=False`, `repayment_plan='standard'`, `qualifying_payments=0` |
 | CreditCard (`kind: credit_card`) | `CreditCard` | `credit_limit` | `name='Card'`, `balance=0.0`, `payment_strategy='minimum'`, `payment_monthly=0.0`, `spending_charged_pct=0.0` |
 | HomeEquityLine (`kind: heloc`) | `HomeEquityLine` | `home`, `credit_limit`, `rate_pct` | `balance=0.0`, `improvement_balance=0.0`, `payment_strategy='interest_only'`, `payment_monthly=0.0` |
-| BridgeLine (`kind: bridge_line`) | `DatedBridgeLine` | `home`, `credit_limit`, `rate_pct` | `drawn_principal=0.0`, `accrued_interest=0.0` |
+| BridgeLine (`kind: bridge_line`) | `DatedBridgeLine` | `home`, `credit_limit`, `rate_pct` | `drawn_principal=0.0`, `accrued_interest=0.0`, `interest_mode='simple'`, `capitalized_interest=0.0` |
 | Home (`kind: home`) | `Home` | `purchase_price`, `expenses` | `name='Home'`, `value_growth_pct='economy'`, `down_payment=0.0`, `purchase=False`, `pmi=True` |
 | Mortgage | `Mortgage` | `rate_pct` | `extra_principal_monthly=0.0`, `schedule='contract'`, `rate_compounding='monthly'` |
 | MortgageRenewalState | `MortgageRenewalState` | `original_amount`, `rate_pct`, `payment_monthly`, `term_months`, `payments_made` | `grandfathered_cap=0.0` |

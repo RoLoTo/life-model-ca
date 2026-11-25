@@ -2071,6 +2071,17 @@ class BridgeLine(SpecModel):
         allow_inf_nan=False,
     )
     accrued_through: date | None = spec_field(None, description="Date through which opening interest was calculated.")
+    interest_mode: Literal["simple", "compound_monthly", "monthly_interest"] = spec_field(
+        "simple",
+        description="Accrual and servicing rule: 'simple' (unserviced), 'compound_monthly' (monthly capitalized), or 'monthly_interest' (monthly interest-only payments).",
+    )
+    capitalized_interest: NonNegativeMoney = spec_field(
+        0.0,
+        description="Opening capitalized unpaid interest in whole cents (compound_monthly only).",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
+    )
 
     @model_validator(mode="after")
     def _opening(self) -> "BridgeLine":
@@ -2080,6 +2091,8 @@ class BridgeLine(SpecModel):
             raise ValueError("Supply an accrued-through date exactly when there is opening principal")
         if self.accrued_interest and not self.drawn_principal:
             raise ValueError("Opening bridge interest requires drawn principal")
+        if self.capitalized_interest and (self.interest_mode != "compound_monthly" or not self.drawn_principal):
+            raise ValueError("Opening capitalized bridge interest requires compound_monthly with drawn principal")
         return self
 
 

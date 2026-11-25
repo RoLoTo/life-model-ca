@@ -1139,6 +1139,8 @@ class _Extractor:
                         drawn_principal=float(line.drawn_principal),
                         accrued_interest=float(line.accrued_interest),
                         accrued_through=line.accrued_through,
+                        interest_mode=line.interest_mode,
+                        capitalized_interest=float(line.capitalized_interest),
                     )
                 )
                 continue

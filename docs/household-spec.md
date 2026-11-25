@@ -898,6 +898,8 @@ Builds: `DatedBridgeLine`.
 | `drawn_principal` | number | USD | `0.0` |  | Opening drawn principal in whole cents. |
 | `accrued_interest` | number | USD | `0.0` |  | Opening unpaid interest, which can include fractional cents. |
 | `accrued_through` | date (optional) |  | — |  | Date through which opening interest was calculated. |
+| `interest_mode` | `"simple"` \\| `"compound_monthly"` \\| `"monthly_interest"` |  | `"simple"` |  | Accrual and servicing rule: 'simple' (unserviced), 'compound_monthly' (monthly capitalized), or 'monthly_interest' (monthly interest-only payments). |
+| `capitalized_interest` | number | USD | `0.0` |  | Opening capitalized unpaid interest in whole cents (compound_monthly only). |
 
 ## Home
 
