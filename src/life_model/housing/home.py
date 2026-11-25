@@ -361,10 +361,15 @@ class Home(LifeModelAgent):
         elif sale_exclusion is None and canadian_principal_residence:
             raise ValueError("A Canadian principal residence designation requires the Ontario return policy")
 
+        final_month: tuple | None = None
         if canadian_rental_sale and sale_date.day == monthrange(sale_date.year, sale_date.month)[1]:
             from ..people.tax_unit import TaxUnit
 
-            TaxUnit.for_member(self.person).settle_home_month(self, on=sale_date)
+            unit = TaxUnit.for_member(self.person)
+            month_housing = self.make_monthly_payment()
+            month_interest = self.year_payment.get("mortgage_interest", 0.0)
+            month_lines = unit._housing_lines(self.person, self)
+            final_month = (unit, month_housing, month_interest, month_lines)
 
         selling_costs = sale_price * (selling_cost_percent / 100) + selling_cost_fixed
         mortgage_payoff = self.mortgage.principal if self.mortgage is not None else 0.0
@@ -420,6 +425,10 @@ class Home(LifeModelAgent):
                 shortfall, kind=FlowKind.HOUSING, to_account=self, cause=f"{cause}: underwater payoff"
             )
             self.person.add_debt(unpaid, to_account=self, cause=f"{cause}: underwater payoff")
+
+        if final_month is not None:
+            unit, month_housing, month_interest, month_lines = final_month
+            unit.pay_home_month_bills(self.person, month_housing, month_interest, month_lines, on=sale_date)
 
         from ..debt.bridge import DatedBridgeLine
 

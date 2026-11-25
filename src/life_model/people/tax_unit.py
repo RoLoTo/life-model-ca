@@ -1278,13 +1278,17 @@ class TaxUnit:
             member.stat_housing_costs = snap_money(member.stat_housing_costs + housing_by_member.get(uid, 0.0))
             member.stat_interest_paid = snap_money(member.stat_interest_paid + interest_by_member.get(uid, 0.0))
 
-    def settle_home_month(self, home, *, on: date) -> None:
-        """Settle one month's rent, operating costs, expenses, and mortgage payment for ``home``."""
+    def pay_home_month_bills(
+        self,
+        member: "Person",
+        housing: float,
+        interest: float,
+        bill_lines: "list[_BillLine]",
+        *,
+        on: date,
+    ) -> None:
+        """Pay pre-computed monthly housing lines for ``member`` from current bank cash before withdrawals."""
         model = self.members[0].model
-        member = home.person
-        housing = home.make_monthly_payment()
-        interest = home.year_payment.get("mortgage_interest", 0.0)
-        bill_lines = self._housing_lines(member, home)
         if housing > 0:
             paid_from = {}
             with model.ledger.caused_by(f"pay {on.isoformat()} housing"):
@@ -1299,7 +1303,12 @@ class TaxUnit:
             funding = deque(paid_from.items()) if any(account is not payer for account in paid_from) else None
             for line in bill_lines:
                 line.post(model.ledger, payer, funding=funding)
-            self.members[0].add_debt(shortfall, to_account=payer, cause=f"unpaid {on.isoformat()} housing")
+            self.members[0].add_debt(
+                shortfall,
+                to_account=payer,
+                cause=f"unpaid {on.isoformat()} housing",
+                defer_until_next_month=True,
+            )
         member.stat_housing_costs = snap_money(member.stat_housing_costs + housing)
         member.stat_interest_paid = snap_money(member.stat_interest_paid + interest)
 

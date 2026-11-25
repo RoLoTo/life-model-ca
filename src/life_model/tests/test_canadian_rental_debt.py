@@ -966,3 +966,82 @@ def test_month_end_canadian_rental_sale_settles_final_month_rent_and_mortgage_in
     assert sold_model.household.items["old-home"].sold
     assert sold_model.household.items["old-home"].mortgage.principal == 0.0
     assert_conservation(sold_model, monthly=True)
+
+
+def test_month_end_rental_sale_uses_sale_proceeds_before_withdrawals_or_shortfall_debt():
+    """Same-day sale proceeds fund final-month housing bills before tapping RRSP or shortfall debt."""
+    taxes = {}
+    for opening_bank in (0, 2500):
+        spec = _rental_base_spec(
+            bank_balance=opening_bank, mortgage_balance=100000, mortgage_rate=12.0, payment_monthly=1100.0
+        )
+        spec["meta"]["end_year"] = 2027
+        spec["meta"]["ontario_retirement_tax"]["settlement_dates"] = {2027: "2028-04-30"}
+        spec["people"][0]["accounts"].append(
+            {
+                "kind": "rrsp",
+                "id": "rrsp",
+                "balance": 10000,
+                "growth_pct": 0,
+                "owner_birth": "1967-01-01",
+                "convert_at_maturity": True,
+            }
+        )
+        spec["people"][0]["housing"][0]["mortgage"]["rate_compounding"] = "monthly"
+        spec["events"] = [
+            _convert_event(2027, 1, rent=1000, cost=1000),
+            {
+                "action": "ontario_tax_statement",
+                "id": "other-income",
+                "person": "owner",
+                "at": at(2027, 1, 15),
+                "taxable_interest": 80000,
+            },
+            {
+                "action": "sell_home",
+                "id": "sale",
+                "person": "owner",
+                "home": "old-home",
+                "at": at(2027, 1, 31),
+                "canadian_rental_sale": True,
+                "selling_cost_pct": 0,
+                "selling_cost_fixed": 0,
+            },
+        ]
+        model = build(spec)
+        model.run()
+        owner = model.household.people["owner"]
+        assert model.household.items["rrsp"].balance == 10000.0
+        assert owner.debt == 0.0
+        assert owner.usable_bank_balance == opening_bank + 799000.0
+        ret = model.income_tax_policy.returns[2027]
+        assert ret.working_income["rental_gross"] == D("1000.00")
+        assert ret.working_income["rental_operating_cost"] == D("1000.00")
+        assert ret.working_income["rental_eligible_interest"] == D("1000.00")
+        taxes[opening_bank] = ret.tax.total
+        assert_conservation(model, monthly=True)
+    assert taxes[0] == taxes[2500]
+
+    # Without an RRSP, zero opening bank also avoids temporary carried debt and spurious debt interest.
+    no_rrsp = _rental_base_spec(bank_balance=0, mortgage_balance=100000, mortgage_rate=12.0, payment_monthly=1100.0)
+    no_rrsp["people"][0]["housing"][0]["mortgage"]["rate_compounding"] = "monthly"
+    no_rrsp["events"] = [
+        _convert_event(2027, 1, rent=1000, cost=1000),
+        {
+            "action": "sell_home",
+            "id": "sale",
+            "person": "owner",
+            "home": "old-home",
+            "at": at(2027, 1, 31),
+            "canadian_rental_sale": True,
+            "selling_cost_pct": 0,
+            "selling_cost_fixed": 0,
+        },
+    ]
+    m_no_rrsp = build(no_rrsp)
+    m_no_rrsp.step()
+    owner = m_no_rrsp.household.people["owner"]
+    assert owner.usable_bank_balance == 799000.0
+    assert owner.debt == 0.0
+    assert owner.stat_interest_paid == 1000.0
+    assert_conservation(m_no_rrsp, monthly=True)
