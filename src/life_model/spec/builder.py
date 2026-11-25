@@ -1593,6 +1593,7 @@ def _populate(model: LifeModel, spec: s.HouseholdSpec) -> BuiltHousehold:
             freeze_2026=settings.freeze_2026,
             freeze_after=settings.freeze_after,
             indexation=(index.base_year, index.annual_pct) if index is not None else None,
+            payroll_indexation_pct=index.payroll_annual_pct if index is not None else None,
             estimate_registered_withholding=settings.estimate_registered_withholding,
             track_foreign_cash_gains=settings.track_foreign_cash_gains,
             schedule=built.life_events,

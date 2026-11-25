@@ -274,7 +274,14 @@ class Corporation(LifeModelAgent):
             raise ValueError("Corporate payroll requires a living recipient")
         year = on.year
         prior = self.payroll_ytd.get(year, YearToDate())
-        pay, next_ytd = monthly_pay(gross, withholding, prior, year=policy.rate_year(year), ei_insurable=ei_insurable)
+        pay, next_ytd = monthly_pay(
+            gross,
+            withholding,
+            prior,
+            year=policy.payroll_rate_year(year),
+            ei_insurable=ei_insurable,
+            rates=policy.payroll_rates(year),
+        )
         key = self.pay_salary(recipient, pay, on, remits_on, reference=reference)
         self.payroll_ytd[year] = next_ytd
         self._change_profit(on, -pay.employer_cost)

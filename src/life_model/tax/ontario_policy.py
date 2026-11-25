@@ -132,6 +132,7 @@ class OntarioRetirementPolicy:
         oas_recovery_thresholds: dict[int, Decimal] | None = None,
         opening_balances: dict[int, tuple[Decimal, date]] | None = None,
         indexation: tuple[int, Decimal] | None = None,
+        payroll_indexation_pct: Decimal | None = None,
         estimate_registered_withholding: bool = False,
         track_foreign_cash_gains: bool = False,
     ):
@@ -157,7 +158,14 @@ class OntarioRetirementPolicy:
             raise ValueError("Use either freeze_2026 or freeze_after")
         if indexation is not None and (freeze_2026 or freeze_after is not None):
             raise ValueError("Use either a rate freeze or a tax indexation assumption")
+        if payroll_indexation_pct is not None:
+            if indexation is None:
+                raise ValueError("Payroll ceiling indexation requires tax indexation with a base year")
+            payroll_indexation_pct = Decimal(str(payroll_indexation_pct))
+            if not 0 <= payroll_indexation_pct <= 100:
+                raise ValueError("Invalid Ontario payroll indexation rate")
         self.indexation = indexation
+        self.payroll_indexation_pct = payroll_indexation_pct
         self.estimate_registered_withholding = estimate_registered_withholding
         self.foreign_cash_pool = None
         if track_foreign_cash_gains:
@@ -220,11 +228,21 @@ class OntarioRetirementPolicy:
     def rate_year(self, year: int) -> int:
         return year if self.freeze_after is None else min(year, self.freeze_after)
 
+    def payroll_rate_year(self, year: int) -> int:
+        if self.indexation is not None and self.payroll_indexation_pct is not None and year > self.indexation[0]:
+            return year
+        return self.rate_year(year)
+
     def income_tax_rates(self, year: int) -> OntarioRates:
         if self.indexation is not None and year > self.indexation[0]:
             base_year, annual_pct = self.indexation
-            return project_ontario_income_tax_rates(base_year, year, annual_pct)
+            return project_ontario_income_tax_rates(
+                base_year, year, annual_pct, payroll_annual_pct=self.payroll_indexation_pct
+            )
         return ontario_rates(self.rate_year(year))
+
+    def payroll_rates(self, year: int) -> OntarioRates:
+        return self.income_tax_rates(year)
 
     def home_sale_exclusion(self, owner, gain: float, principal_residence: bool) -> float:
         """Accept a supplied full principal residence designation for a simplified projection."""
@@ -263,7 +281,7 @@ class OntarioRetirementPolicy:
     def validate_payroll(self, recipient, when: date, event_id: str, *, pay=None) -> None:
         if recipient is not self.owner:
             raise ValueError("This payroll connection requires its Ontario taxpayer")
-        if pay is not None and pay.rate_year != self.rate_year(when.year):
+        if pay is not None and pay.rate_year != self.payroll_rate_year(when.year):
             raise ValueError("Payroll rates must match the Ontario return rate year")
         self.validate_event(when, event_id)
 
@@ -357,7 +375,7 @@ class OntarioRetirementPolicy:
             (item.deduction for item in additional_options), D(0)
         )
         option_cpp = sum((payroll for _, _, payroll in exercises), D(0))
-        rates = ontario_rates(self.rate_year(year))
+        rates = self.payroll_rates(year)
         enhanced_max = rates.cpp_max - rates.base_cpp_max + rates.cpp2_max
         if emp_base_cpp > rates.base_cpp_max or emp_enhanced_cpp > enhanced_max or ei > rates.ei_max:
             raise ValueError("Supply reconciled CPP and EI amounts after any overpayment calculation")

@@ -76,17 +76,31 @@ def ontario_rates(year: int) -> OntarioRates:
 
 
 @cache
-def project_ontario_income_tax_rates(base_year: int, year: int, annual_pct: Decimal) -> OntarioRates:
-    """Apply a scenario rate to the indexed personal amounts only.
+def project_ontario_income_tax_rates(
+    base_year: int,
+    year: int,
+    annual_pct: Decimal,
+    *,
+    payroll_annual_pct: Decimal | None = None,
+) -> OntarioRates:
+    """Apply scenario indexation rates to indexed personal amounts and optional payroll ceilings.
 
-    Sources: federal Income Tax Act s. 117.1 and Ontario Taxation Act s. 23.
-    Payroll parameters are carried separately. The fixed provincial thresholds
-    and Ontario health premium thresholds are held at their nominal values.
+    Sources: federal Income Tax Act s. 117.1, Ontario Taxation Act s. 23, CPP Act s. 18, and
+    Employment Insurance Act s. 4. The fixed provincial thresholds, Ontario health premium
+    thresholds, and statutory CAD 3,500 CPP basic exemption remain at their nominal values.
+    When ``payroll_annual_pct`` is supplied, YMPE, YAMPE and EI maximum insurable earnings are
+    indexed after ``base_year`` and rounded to CAD 100; otherwise payroll ceilings stay at
+    ``base_year``.
     """
     annual_pct = Decimal(str(annual_pct))
     if year < base_year or not 0 <= annual_pct <= 100:
         raise ValueError("Invalid Ontario tax projection year or indexation rate")
+    payroll_pct = None if payroll_annual_pct is None else Decimal(str(payroll_annual_pct))
+    if payroll_pct is not None and not 0 <= payroll_pct <= 100:
+        raise ValueError("Invalid Ontario payroll indexation rate")
     base = ontario_rates(base_year)
+    if year == base_year:
+        return base
     factor = (1 + annual_pct / 100) ** (year - base_year)
 
     def indexed(amount: int) -> int:
@@ -111,13 +125,23 @@ def project_ontario_income_tax_rates(base_year: int, year: int, annual_pct: Deci
     ontario = tuple(
         (min(fixed_ceiling, indexed(limit)), rate) for limit, rate in base.ontario_brackets[:2] if limit is not None
     )
-    return base.model_copy(
-        update={
-            **{name: indexed(getattr(base, name)) for name in amounts},
-            "federal_brackets": tuple(
-                (None if limit is None else indexed(limit), rate) for limit, rate in base.federal_brackets
-            ),
-            "ontario_brackets": (*ontario, *base.ontario_brackets[2:]),
-            "ontario_surtax": tuple((indexed(limit), rate) for limit, rate in base.ontario_surtax),
-        }
-    )
+    updates: dict = {
+        **{name: indexed(getattr(base, name)) for name in amounts},
+        "federal_brackets": tuple(
+            (None if limit is None else indexed(limit), rate) for limit, rate in base.federal_brackets
+        ),
+        "ontario_brackets": (*ontario, *base.ontario_brackets[2:]),
+        "ontario_surtax": tuple((indexed(limit), rate) for limit, rate in base.ontario_surtax),
+    }
+    if payroll_pct is not None:
+        payroll_factor = (1 + payroll_pct / 100) ** (year - base_year)
+
+        def indexed_ceiling(amount: int) -> int:
+            return int((amount * payroll_factor / 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)) * 100
+
+        updates.update(
+            ympe=indexed_ceiling(base.ympe),
+            yampe=indexed_ceiling(base.yampe),
+            ei_max_earnings=indexed_ceiling(base.ei_max_earnings),
+        )
+    return base.model_copy(update=updates)

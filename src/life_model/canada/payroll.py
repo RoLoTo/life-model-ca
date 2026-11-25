@@ -7,7 +7,7 @@ The rules cover a full-year CPP participant with ordinary monthly pay.
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
-from .rates import CPP_EXEMPTION, ontario_rates
+from .rates import CPP_EXEMPTION, OntarioRates, ontario_rates
 
 D = Decimal
 _ZERO = D(0)
@@ -51,10 +51,16 @@ class Pay:
 
 
 def monthly_pay(
-    gross: Decimal, income_tax: Decimal, prior: YearToDate, *, year: int, ei_insurable: bool
+    gross: Decimal,
+    income_tax: Decimal,
+    prior: YearToDate,
+    *,
+    year: int,
+    ei_insurable: bool,
+    rates: OntarioRates | None = None,
 ) -> tuple[Pay, YearToDate]:
     """Calculate regular CPP, CPP2 and EI for one Ontario monthly pay."""
-    rates = ontario_rates(year)
+    rates = ontario_rates(year) if rates is None else rates
     if gross <= 0 or income_tax < 0:
         raise ValueError("Gross pay must be positive and income tax withholding nonnegative")
     if not (

@@ -140,11 +140,19 @@ class OpeningOntarioTaxBalance(SpecModel):
 
 
 class OntarioTaxIndexation(SpecModel):
-    """A pinned published rate vintage and an assumed annual tax indexation rate."""
+    """A pinned published rate vintage and assumed annual tax and payroll indexation rates."""
 
     base_year: Year = spec_field(description="Published Ontario rate vintage for projections after this year.")
     annual_pct: Decimal = spec_field(
         description="Annual percentage adjustment of indexed personal amounts.", ge=0, le=100, unit="percent"
+    )
+    payroll_annual_pct: Decimal | None = spec_field(
+        None,
+        description="Annual percentage adjustment of projected YMPE, YAMPE and EI maximum insurable earnings after "
+        "base_year, rounded to CAD 100. Omit to hold payroll ceilings at base_year.",
+        ge=0,
+        le=100,
+        unit="percent",
     )
 
 
@@ -160,8 +168,8 @@ class OntarioRetirementTax(SpecModel):
 
     indexation: OntarioTaxIndexation | None = spec_field(
         None,
-        description="Project indexed personal-tax amounts after a published vintage. Payroll rates and limits "
-        "stay at the base vintage in future years.",
+        description="Project indexed personal-tax amounts after a published vintage, and optionally project payroll "
+        "ceilings when payroll_annual_pct is set.",
     )
     track_foreign_cash_gains: bool = spec_field(
         False, description="Pool this taxpayer's USD capital-account cash and calculate the annual net FX result."

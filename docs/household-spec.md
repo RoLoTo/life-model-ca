@@ -81,7 +81,7 @@ Builds: `LifeModel`.
 | `settlement_dates` | map[integer → date] |  | **required** |  | Projected payment or refund date for each following-year settlement. |
 | `freeze_2026` | boolean |  | `False` |  | Explicitly carry the 2026 parameters forward in projections. |
 | `freeze_after` | integer (optional) |  | — |  | Use published parameters through this year and carry its rates forward in later years. |
-| `indexation` | [OntarioTaxIndexation](#ontariotaxindexation) (optional) |  | — |  | Project indexed personal-tax amounts after a published vintage. Payroll rates and limits stay at the base vintage in future years. |
+| `indexation` | [OntarioTaxIndexation](#ontariotaxindexation) (optional) |  | — |  | Project indexed personal-tax amounts after a published vintage, and optionally project payroll ceilings when payroll_annual_pct is set. |
 | `track_foreign_cash_gains` | boolean |  | `False` |  | Pool this taxpayer's USD capital-account cash and calculate the annual net FX result. |
 | `estimate_registered_withholding` | boolean |  | `False` |  | Estimate non-Quebec lump-sum withholding on automatic withdrawals and scheduled payments without an explicit withholding amount. Each payment is treated as a separate request. |
 | `oas_recovery_thresholds` | map[integer → Decimal] |  | {} |  | Scenario OAS recovery thresholds by actual tax year, overriding the selected rate table. |
@@ -89,12 +89,13 @@ Builds: `LifeModel`.
 
 ## OntarioTaxIndexation
 
-A pinned published rate vintage and an assumed annual tax indexation rate.
+A pinned published rate vintage and assumed annual tax and payroll indexation rates.
 
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
 | `base_year` | integer |  | **required** |  | Published Ontario rate vintage for projections after this year. |
 | `annual_pct` | Decimal | percent | **required** |  | Annual percentage adjustment of indexed personal amounts. |
+| `payroll_annual_pct` | Decimal (optional) | percent | — |  | Annual percentage adjustment of projected YMPE, YAMPE and EI maximum insurable earnings after base_year, rounded to CAD 100. Omit to hold payroll ceilings at base_year. |
 
 ## OpeningOntarioTaxBalance
 
