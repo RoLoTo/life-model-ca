@@ -1045,3 +1045,27 @@ def test_month_end_rental_sale_uses_sale_proceeds_before_withdrawals_or_shortfal
     assert owner.debt == 0.0
     assert owner.stat_interest_paid == 1000.0
     assert_conservation(m_no_rrsp, monthly=True)
+
+    # Underwater sale defers the unpaid mortgage-payoff shortfall until next month (no same-month debt interest).
+    underwater = _rental_base_spec(bank_balance=0, mortgage_balance=950000, mortgage_rate=0.0, payment_monthly=1100.0)
+    underwater["people"][0]["housing"][0]["purchase_price"] = 1000000
+    underwater["events"] = [
+        _convert_event(2027, 1, rent=1000, cost=1000),
+        {
+            "action": "sell_home",
+            "id": "sale",
+            "person": "owner",
+            "home": "old-home",
+            "at": at(2027, 1, 31),
+            "canadian_rental_sale": True,
+            "selling_cost_pct": 0,
+            "selling_cost_fixed": 0,
+        },
+    ]
+    m_under = build(underwater)
+    m_under.step()
+    owner = m_under.household.people["owner"]
+    assert owner.usable_bank_balance == 0.0
+    assert owner.debt == 50000.0
+    assert owner.stat_interest_paid == 0.0
+    assert_conservation(m_under, monthly=True)

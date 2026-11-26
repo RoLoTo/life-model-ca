@@ -424,7 +424,9 @@ class Home(LifeModelAgent):
             unpaid = TaxUnit.for_member(self.person).pay_bills(
                 shortfall, kind=FlowKind.HOUSING, to_account=self, cause=f"{cause}: underwater payoff"
             )
-            self.person.add_debt(unpaid, to_account=self, cause=f"{cause}: underwater payoff")
+            self.person.add_debt(
+                unpaid, to_account=self, cause=f"{cause}: underwater payoff", defer_until_next_month=True
+            )
 
         if final_month is not None:
             unit, month_housing, month_interest, month_lines = final_month
