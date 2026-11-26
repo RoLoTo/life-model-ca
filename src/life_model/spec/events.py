@@ -39,7 +39,7 @@ The primary compiled ``LifeEvent`` carries ``spec_source`` for
 """
 
 from datetime import date
-from decimal import ROUND_DOWN, Decimal
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
 
 from ..lifeevents import LifeEvent
@@ -486,7 +486,9 @@ def _buy_home_event(builder: "_Builder", person, event: s.BuyHomeEvent) -> None:
         )
         funding = funding.model_copy(update={"closing_costs": funding.closing_costs + transfer_tax})
     try:
-        _buy_home(builder, person, event.home, funding)
+        agent = _buy_home(builder, person, event.home, funding)
+        if event.at.day is not None:
+            agent._appreciation_anchor = date(builder.model.year, builder.model.month, event.at.day)
     except ClosingShortfall as error:
         error.closing_on = date(builder.model.year, builder.model.month, event.at.day or 1)
         error.person_id = event.person
@@ -537,6 +539,7 @@ def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCas
     if home.id is not None:
         builder.built.items[home.id] = agent
         agent.spec_id = home.id
+    return agent
 
 
 def _record_home_valuation(builder: "_Builder", person, event: s.HomeValuationEvent) -> None:
@@ -690,9 +693,12 @@ def _compile_corporate_event(builder: "_Builder", person, event: s.CorporateEven
                 amount -= corp.calendar_dividends_paid.get(on.year, 0)
             if event.taxable_income_target is not None:
                 policy = person.model.income_tax_policy
-                room = max(Decimal(0), event.taxable_income_target - policy.taxable_income_to_date())
-                dividend = room / policy.taxable_dividend_multiple(on.year)
-                amount = min(amount, dividend.quantize(Decimal(".01"), rounding=ROUND_DOWN))
+                dividend = policy.gross_for_taxable_income_target(
+                    event.taxable_income_target,
+                    is_noneligible_dividend=True,
+                    max_gross=amount,
+                )
+                amount = min(amount, dividend)
             if amount <= 0:
                 return
             corp.pay_dividend(

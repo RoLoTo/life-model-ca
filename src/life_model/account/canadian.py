@@ -119,8 +119,12 @@ def withdraw_registered(
     if deferred and getattr(policy, "owner", None) is not owner:
         raise ValueError("A withdrawal from a Canadian deferred account needs the Ontario return policy")
     if taxable_income_target is not None:
-        room = max(D(0), D(str(taxable_income_target)) - policy.taxable_income_to_date())
-        amount = min(amount, room.quantize(D(".01"), rounding=ROUND_DOWN))
+        gross_needed = policy.gross_for_taxable_income_target(
+            D(str(taxable_income_target)),
+            is_noneligible_dividend=False,
+            max_gross=amount,
+        )
+        amount = min(amount, gross_needed)
     _check_registered_cash(account, on, amount)
     if withholding is None:
         withholding = (

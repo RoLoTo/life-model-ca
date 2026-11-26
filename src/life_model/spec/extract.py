@@ -219,7 +219,8 @@ class _Extractor:
                     outstanding[entry.tax_year] = s.OpeningOntarioTaxBalance(
                         balance=balance, settles_on=entry.settlement
                     )
-            tax = tax.model_copy(update={"opening_balances": outstanding})
+            amt_cf = policy.amt_carryforwards_before(self.start)
+            tax = tax.model_copy(update={"opening_balances": outstanding, "opening_amt_carryforwards": amt_cf})
         return s.Meta(
             ontario_retirement_tax=tax,
             name=src.name if src is not None else "household",

@@ -16,6 +16,12 @@ _DONATION_LOW_TIER = D(200)
 _DONATION_INCOME_LIMIT = D(".75")
 # Taxation Act, 2007 (Ontario) s. 23: gifts above $200 earn the fixed 11.16% Ontario rate.
 _ONTARIO_DONATION_RATE = D(".1116")
+# Federal ITA s. 127.51 / s. 127.531 / s. 120.2 and Ontario Taxation Act, 2007 s. 7 (2024+ AMT regime).
+_AMT_FEDERAL_RATE = D(".205")
+_AMT_ONTARIO_RATE = D(".2463")
+_AMT_CREDIT_SHARE = D(".5")
+_AMT_DONATION_CREDIT_SHARE = D(".8")
+AMT_CARRYFORWARD_YEARS = 7
 _HEALTH_PREMIUM = (
     (20000, 300, ".06"),
     (36000, 150, ".06"),
@@ -54,6 +60,10 @@ class OntarioTax:
     health_premium: Decimal
     ei_repayment: Decimal = _ZERO
     oas_recovery: Decimal = _ZERO
+    federal_amt: Decimal = _ZERO
+    ontario_amt: Decimal = _ZERO
+    federal_amt_recovery: Decimal = _ZERO
+    ontario_amt_recovery: Decimal = _ZERO
 
     @property
     def total(self) -> Decimal:
@@ -78,8 +88,10 @@ def income_tax(
     oas_threshold: Decimal | None = None,
     projected_rates: OntarioRates | None = None,
     donations: Decimal = _ZERO,
+    net_capital_gain: Decimal = _ZERO,
+    amt_carryforward_available: Decimal = _ZERO,
 ) -> OntarioTax:
-    """CAD estimate for the supported T1/ON428 income subset."""
+    """CAD estimate for the supported T1/ON428/T691 income subset."""
     rates = ontario_rates(year) if projected_rates is None else projected_rates
     if eligible_pension < 0 or age < 18 or rrsp_deduction < 0:
         raise ValueError("Invalid Ontario pension income, age or RRSP deduction")
@@ -87,6 +99,8 @@ def income_tax(
         raise ValueError("Non-eligible dividends cannot be negative")
     if donations < 0:
         raise ValueError("Charitable gifts cannot be negative")
+    if amt_carryforward_available < 0:
+        raise ValueError("AMT carryforward cannot be negative")
     taxable_dividends = taxable_noneligible_dividends(noneligible_dividends, year) if noneligible_dividends else _ZERO
     if min(cpp_retirement, oas_benefits) < 0 or (oas_threshold is not None and oas_threshold <= 0):
         raise ValueError("Invalid Canadian pension income or OAS recovery threshold")
@@ -139,15 +153,45 @@ def income_tax(
         rates.ontario_basic_amount + age_ontario + min(eligible_pension, rates.ontario_pension_limit) + payroll_credits
     ) * rates.ontario_brackets[0][1]
     federal_dividend_credit = money(taxable_dividends * rates.federal_noneligible_dividend_credit)
-    federal = max(
+    regular_federal = max(
         _ZERO,
         bracket_tax(taxable, rates.federal_brackets)
         - federal_credits
         - federal_donation_credit
         - federal_dividend_credit,
     )
+    # T691 Alternative Minimum Tax: 100% capital gains and stock-option inclusion, actual dividends
+    # without gross-up or dividend credit, 50% regular credits, 80% donation credit, 20.5% above the
+    # fourth federal bracket threshold.
+    positive_gain = max(_ZERO, net_capital_gain)
+    unincluded_capital_gain = positive_gain - money(positive_gain * D(".5"))
+    dividend_grossup = taxable_dividends - noneligible_dividends
+    adjusted_taxable_income = max(
+        _ZERO,
+        taxable + unincluded_capital_gain + taxable_income_deduction - dividend_grossup,
+    )
+    amt_exemption = D(basic_phaseout_start)
+    amt_federal_credits = federal_credits * _AMT_CREDIT_SHARE + federal_donation_credit * _AMT_DONATION_CREDIT_SHARE
+    federal_minimum_amount = max(
+        _ZERO,
+        max(_ZERO, adjusted_taxable_income - amt_exemption) * _AMT_FEDERAL_RATE - amt_federal_credits,
+    )
+    federal_amt = money(max(_ZERO, federal_minimum_amount - regular_federal))
+    federal_amt_recovery = _ZERO
+    if federal_amt == _ZERO and amt_carryforward_available > _ZERO:
+        recovery_room = max(_ZERO, regular_federal - federal_minimum_amount)
+        federal_amt_recovery = money(min(amt_carryforward_available, recovery_room))
+    federal = max(_ZERO, regular_federal + federal_amt - federal_amt_recovery)
+
+    ontario_amt = money(federal_amt * _AMT_ONTARIO_RATE)
+    ontario_amt_recovery = money(federal_amt_recovery * _AMT_ONTARIO_RATE)
     basic_province = max(
-        _ZERO, bracket_tax(taxable, rates.ontario_brackets) - provincial_credits - ontario_donation_credit
+        _ZERO,
+        bracket_tax(taxable, rates.ontario_brackets)
+        - provincial_credits
+        - ontario_donation_credit
+        + ontario_amt
+        - ontario_amt_recovery,
     )
     surtax = sum(rate * max(_ZERO, basic_province - threshold) for threshold, rate in rates.ontario_surtax)
     provincial_dividend_credit = money(taxable_dividends * rates.ontario_noneligible_dividend_credit)
@@ -156,7 +200,17 @@ def income_tax(
     reduction = max(_ZERO, min(before_reduction, 2 * rates.ontario_basic_reduction - before_reduction))
     premium = sum(min(D(cap), D(rate) * max(_ZERO, taxable - threshold)) for threshold, cap, rate in _HEALTH_PREMIUM)
     return OntarioTax(
-        income, taxable, money(federal), money(before_reduction - reduction), money(premium), repayment, oas_recovery
+        income,
+        taxable,
+        money(federal),
+        money(before_reduction - reduction),
+        money(premium),
+        repayment,
+        oas_recovery,
+        federal_amt,
+        ontario_amt,
+        federal_amt_recovery,
+        ontario_amt_recovery,
     )
 
 

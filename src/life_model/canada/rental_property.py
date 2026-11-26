@@ -60,6 +60,7 @@ def convert_to_rental(home, *, on: date, market_value: Decimal, rental: OntarioR
         float(abs(delta)), FlowKind.GROWTH, **side, cause=f"Rental conversion market value on {on}", agent=home.person
     )
     home.home_value = home.cost_basis = float(market_value)
+    home._appreciation_anchor = on
     home.total_improvements = 0.0
     home.ontario_rental = rental
     if home.mortgage is not None and home.mortgage.principal > 0:

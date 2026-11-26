@@ -11,7 +11,7 @@ from .canadian_employment import EmploymentIncome
 from .canadian_equity import OptionExercise, ShareDisposition
 from .foreign_cash import ForeignCashTaxPool
 from .income import IncomeType
-from .ontario import OntarioTax, income_tax, money, taxable_noneligible_dividends
+from .ontario import AMT_CARRYFORWARD_YEARS, OntarioTax, income_tax, money, taxable_noneligible_dividends
 from .ontario_statement import OntarioTaxStatement
 from .payments import payments_of
 from .rrsp import check_deduction_date
@@ -47,6 +47,8 @@ class OntarioTaxInputs:
     oas_threshold: Decimal | None = None
     projected_rates: OntarioRates | None = None
     donations: Decimal = _ZERO
+    net_capital_gain: Decimal = _ZERO
+    amt_carryforward_available: Decimal = _ZERO
 
     def calculate(self, rrsp_deduction: Decimal) -> OntarioTax:
         return income_tax(
@@ -66,6 +68,8 @@ class OntarioTaxInputs:
             oas_threshold=self.oas_threshold,
             projected_rates=self.projected_rates,
             donations=self.donations,
+            net_capital_gain=self.net_capital_gain,
+            amt_carryforward_available=self.amt_carryforward_available,
         )
 
 
@@ -86,7 +90,14 @@ class OntarioReturn:
 
     def to_record(self) -> dict:
         amounts = asdict(self.tax)
-        for optional in ("ei_repayment", "oas_recovery"):
+        for optional in (
+            "ei_repayment",
+            "oas_recovery",
+            "federal_amt",
+            "ontario_amt",
+            "federal_amt_recovery",
+            "ontario_amt_recovery",
+        ):
             if not amounts[optional]:
                 amounts.pop(optional)
         return {
@@ -131,6 +142,7 @@ class OntarioRetirementPolicy:
         schedule=None,
         oas_recovery_thresholds: dict[int, Decimal] | None = None,
         opening_balances: dict[int, tuple[Decimal, date]] | None = None,
+        opening_amt_carryforwards: dict[int, Decimal] | None = None,
         indexation: tuple[int, Decimal] | None = None,
         payroll_indexation_pct: Decimal | None = None,
         estimate_registered_withholding: bool = False,
@@ -144,6 +156,16 @@ class OntarioRetirementPolicy:
             year: OntarioOpeningTax(year, due, balance)
             for year, (balance, due) in sorted((opening_balances or {}).items())
         }
+        self.opening_amt_carryforwards: dict[int, Decimal] = {}
+        for origin_year, amount in sorted((opening_amt_carryforwards or {}).items()):
+            val = money(D(str(amount)))
+            if (
+                origin_year >= model.start_year
+                or origin_year < model.start_year - AMT_CARRYFORWARD_YEARS
+                or val <= _ZERO
+            ):
+                raise ValueError("Opening AMT carryforwards must be positive amounts from the prior 7 tax years")
+            self.opening_amt_carryforwards[origin_year] = val
         self.rrsp_deductions: dict[int, Decimal] = {}
         self.employment: dict[tuple[int, str], EmploymentIncome] = {}
         self.statements: dict[tuple[int, str], OntarioTaxStatement] = {}
@@ -478,11 +500,89 @@ class OntarioRetirementPolicy:
             )
         )
 
+    def amt_carryforwards_before(self, year: int) -> dict[int, Decimal]:
+        """Remaining unexpired federal AMT carryforwards by origin year available for ``year``."""
+        remaining = {origin: amount for origin, amount in self.opening_amt_carryforwards.items() if origin < year}
+        for settled_year, ret in sorted(self.returns.items()):
+            if settled_year >= year:
+                break
+            if ret.tax.federal_amt > _ZERO:
+                remaining[settled_year] = ret.tax.federal_amt
+            recovered = ret.tax.federal_amt_recovery
+            if recovered > _ZERO:
+                for origin in sorted(remaining):
+                    if settled_year - AMT_CARRYFORWARD_YEARS <= origin < settled_year and recovered > _ZERO:
+                        used = min(remaining[origin], recovered)
+                        remaining[origin] -= used
+                        recovered -= used
+                        if remaining[origin] <= _ZERO:
+                            del remaining[origin]
+        return {
+            origin: amount
+            for origin, amount in remaining.items()
+            if year - AMT_CARRYFORWARD_YEARS <= origin < year and amount > _ZERO
+        }
+
+    def available_amt_carryforward(self, year: int) -> Decimal:
+        """Total unexpired prior-7-year federal AMT carryforward available in ``year``."""
+        return sum(self.amt_carryforwards_before(year).values(), _ZERO)
+
     def taxable_income_to_date(self) -> Decimal:
         """Taxable income on the owner's current-year return from the income recorded so far."""
         from ..people.tax_unit import TaxUnit
 
         return self.calculate(TaxUnit.for_member(self.owner)).taxable_income
+
+    def gross_for_taxable_income_target(
+        self,
+        target: Decimal,
+        *,
+        is_noneligible_dividend: bool = False,
+        max_gross: Decimal | None = None,
+    ) -> Decimal:
+        """Whole-cent gross withdrawal (or cash dividend) bringing current-year taxable income to ``target``.
+
+        Accounts for OAS recovery clawback feedback on taxable income so sequential target draws
+        across multiple accounts reach the exact target without over- or under-drawing.
+        """
+        from dataclasses import replace
+
+        from ..people.tax_unit import TaxUnit
+
+        unit = TaxUnit.for_member(self.owner)
+        base_inputs = self._tax_inputs(unit)
+        rrsp_ded = self.rrsp_deductions.get(self.owner.model.year, _ZERO)
+        current = base_inputs.calculate(rrsp_ded).taxable_income
+        if current >= target:
+            return _ZERO
+
+        def taxable_at(gross_cents: int) -> Decimal:
+            gross = Decimal(gross_cents) / 100
+            if is_noneligible_dividend:
+                trial = replace(base_inputs, noneligible_dividends=base_inputs.noneligible_dividends + gross)
+            else:
+                trial = replace(base_inputs, income=base_inputs.income + gross)
+            return trial.calculate(rrsp_ded).taxable_income
+
+        gap = target - current
+        # Even at maximum 15% OAS clawback, each $1 of ordinary income adds at least $0.85 to taxable income.
+        multiple = self.taxable_dividend_multiple(self.owner.model.year) if is_noneligible_dividend else D(1)
+        upper_amount = (gap / (D(".80") * multiple)) + D(2)
+        hi = int((upper_amount * 100).to_integral_value(rounding="ROUND_CEILING"))
+        if max_gross is not None:
+            hi = min(hi, int((max_gross * 100).to_integral_value(rounding="ROUND_DOWN")))
+        if hi <= 0:
+            return _ZERO
+        if taxable_at(hi) <= target:
+            return Decimal(hi) / 100
+        lo = 0
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if taxable_at(mid) <= target:
+                lo = mid
+            else:
+                hi = mid
+        return Decimal(lo) / 100
 
     def taxable_dividend_multiple(self, year: int) -> Decimal:
         """Grossed-up taxable amount per dollar of non-eligible dividend paid in the year."""
@@ -542,6 +642,8 @@ class OntarioRetirementPolicy:
             oas_threshold=self.oas_recovery_thresholds.get(year),
             projected_rates=self.income_tax_rates(year),
             donations=facts.get("donations", D(0)),
+            net_capital_gain=facts["net_capital_gain"],
+            amt_carryforward_available=self.available_amt_carryforward(year),
         )
 
     def __call__(self, unit, **additional) -> TaxesDue:

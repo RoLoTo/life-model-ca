@@ -86,6 +86,7 @@ Builds: `LifeModel`.
 | `estimate_registered_withholding` | boolean |  | `False` |  | Estimate non-Quebec lump-sum withholding on automatic withdrawals and scheduled payments without an explicit withholding amount. Each payment is treated as a separate request. |
 | `oas_recovery_thresholds` | map[integer → Decimal] |  | {} |  | Scenario OAS recovery thresholds by actual tax year, overriding the selected rate table. |
 | `opening_balances` | map[integer → [OpeningOntarioTaxBalance](#openingontariotaxbalance)] |  | {} |  | Outstanding prior-year personal tax balances keyed by tax year. |
+| `opening_amt_carryforwards` | map[integer → Decimal] | CAD | {} |  | Unrecovered prior-7-year federal AMT carryforward balances keyed by origin tax year. |
 
 ## OntarioTaxIndexation
 

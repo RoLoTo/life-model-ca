@@ -188,6 +188,11 @@ class OntarioRetirementTax(SpecModel):
     opening_balances: dict[Year, OpeningOntarioTaxBalance] = spec_field(
         default_factory=dict, description="Outstanding prior-year personal tax balances keyed by tax year."
     )
+    opening_amt_carryforwards: dict[Year, CashAmount] = spec_field(
+        default_factory=dict,
+        description="Unrecovered prior-7-year federal AMT carryforward balances keyed by origin tax year.",
+        unit="CAD",
+    )
 
     @model_validator(mode="after")
     def check_rate_freeze(self) -> "OntarioRetirementTax":
@@ -262,6 +267,9 @@ class Meta(SpecModel):
             for year, item in self.ontario_retirement_tax.opening_balances.items():
                 if year >= self.start_year or item.settles_on < opening:
                     raise ValueError("Opening tax must be for a prior year and settle from the opening month")
+            for year, amount in self.ontario_retirement_tax.opening_amt_carryforwards.items():
+                if year >= self.start_year or year < self.start_year - 7 or amount <= 0:
+                    raise ValueError("Opening AMT carryforwards must be positive amounts from the prior 7 tax years")
         return self
 
     @field_validator("accepted_warnings")

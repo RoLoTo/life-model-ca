@@ -1609,6 +1609,7 @@ def _populate(model: LifeModel, spec: s.HouseholdSpec) -> BuiltHousehold:
             opening_balances={
                 year: (item.balance, item.settles_on) for year, item in settings.opening_balances.items()
             },
+            opening_amt_carryforwards=dict(settings.opening_amt_carryforwards),
         )
     return built
 

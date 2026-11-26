@@ -153,8 +153,13 @@ class Home(LifeModelAgent):
         self._cash_only = purchase and cash_only
         #: ``(year, month)`` the home was bought (None: owned before the run, date unknown).
         self.purchase_period: tuple[int, int] | None = None if purchase_year is None else (int(purchase_year), 1)
+        self._appreciation_anchor: date | None = None
         if purchase:
             self.purchase_period = (self.model.year, self.model.month)
+            if self.model.month > 1:
+                self._appreciation_anchor = date(self.model.year, self.model.month, 1)
+        elif self.model.month > 1:
+            self._appreciation_anchor = date(self.model.year, self.model.month, 1)
         self.expenses._init_assessment()
 
         #: The last housing payment by line (see :meth:`make_monthly_payment` and
@@ -306,6 +311,7 @@ class Home(LifeModelAgent):
             raise ValueError("A positive valuation must apply to an owned home in its observation month")
         delta = float(market_value) - self.home_value
         self.home_value = float(market_value)
+        self._appreciation_anchor = on
         if delta >= 0:
             self.model.ledger.post(
                 delta,
@@ -528,15 +534,27 @@ class Home(LifeModelAgent):
 
     def on_year_end(self):
         # Appreciate at year end (consume-then-advance): property tax for the year is assessed
-        # on the value through the year.
+        # on the value through the year. Prorate from an intra-year purchase or valuation anchor.
         if self.sold or self.person.is_deceased:
             # A home left behind by a decedent with no heir is off every balance sheet.
             return
-        appreciation = self.home_value * (self.value_yearly_increase / 100)
+        rate = self.value_yearly_increase / 100
+        anchor = self._appreciation_anchor
+        self._appreciation_anchor = None
+        year = self.model.year
+        if anchor is not None and anchor.year == year and anchor > date(year, 1, 1):
+            days_in_year = (date(year + 1, 1, 1) - date(year, 1, 1)).days
+            days_remaining = max(0, (date(year, 12, 31) - anchor).days)
+            fraction = days_remaining / days_in_year
+            factor = (1 + rate) ** fraction - 1 if rate > -1 else 0.0
+        else:
+            factor = rate
+        appreciation = self.home_value * factor
         self.home_value += appreciation
-        self.model.ledger.post(
-            appreciation, FlowKind.GROWTH, to_account=self, source="housing market", agent=self.person
-        )
+        if appreciation:
+            self.model.ledger.post(
+                appreciation, FlowKind.GROWTH, to_account=self, source="housing market", agent=self.person
+            )
 
 
 class HomeExpenses(LifeModelAgent):
