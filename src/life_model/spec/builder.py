@@ -760,6 +760,7 @@ class _Builder:
                 lots=lots,
                 growth_pct=_growth(account.growth_pct),
                 dividend_yield_pct=account.dividend_yield_pct,
+                dividend_tax_treatment=account.dividend_tax_treatment,
                 reinvest_dividends=account.reinvest_dividends,
                 joint_owner=joint_owner,
                 **invest,

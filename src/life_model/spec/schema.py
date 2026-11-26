@@ -1149,11 +1149,20 @@ class BrokerageAccount(SpecModel):
     )
     dividend_yield_pct: NonNegativePercent | None = spec_field(
         None,
-        description="Qualified-dividend yield carved out of the total return (the rest is untaxed price growth). "
+        description="Dividend yield carved out of the total return (the rest is untaxed price growth). "
         "Unset: the configured accounts.brokerage.dividend_yield, which is 0 in the packaged defaults (pure price "
         "appreciation, no dividends); enter the fund's yield from the statement.",
         unit="percent",
         core="BrokerageAccount.dividend_yield_pct",
+    )
+    dividend_tax_treatment: Literal["qualified", "eligible_canadian", "noneligible_canadian", "foreign"] | None = (
+        spec_field(
+            None,
+            description="Tax classification for brokerage dividends. Unset defaults to qualified dividends on US "
+            "returns and ordinary foreign dividends on Ontario returns; set 'eligible_canadian' or "
+            "'noneligible_canadian' for Canadian dividend gross-up and tax credits.",
+            core="BrokerageAccount.dividend_tax_treatment",
+        )
     )
     allocation_pct: dict[Literal["equity", "bond", "cash"], float] | None = spec_field(
         None, description=_ALLOCATION_DESC, unit="percent", core="Investment.allocation"
@@ -4118,6 +4127,57 @@ class RRSPToRRIFEvent(RegisteredCashEvent):
     )
 
 
+class TransferCashEvent(EventBase):
+    """Move settled cash between two of the owner's bank accounts on a calendar date."""
+
+    action: Literal["transfer_cash"]
+    from_bank: Identifier = spec_field(description="Id of the owner's source bank account.")
+    to_bank: Identifier = spec_field(description="Id of the owner's destination bank account.")
+    amount: CashAmount = spec_field(description="Cash amount to transfer.", gt=0, unit="CAD")
+    cap_to_balance: bool = spec_field(
+        False, description="Transfer the remaining source balance when it is smaller than amount."
+    )
+
+    @model_validator(mode="after")
+    def check_transfer_fields(self) -> "TransferCashEvent":
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("A cash transfer needs a full calendar date")
+        if self.from_bank == self.to_bank:
+            raise ValueError("from_bank and to_bank must be different accounts")
+        return self
+
+    def effective_date(self) -> date:
+        return date(self.at.year, self.at.month, self.at.day)
+
+
+class SellBrokerageEvent(EventBase):
+    """Sell from a named brokerage account into one of the owner's bank accounts on a calendar date."""
+
+    action: Literal["sell_brokerage"]
+    account: Identifier = spec_field(description="Id of the owner's brokerage account to sell from.")
+    bank: Identifier = spec_field(description="Id of the owner's bank account that receives the proceeds.")
+    amount: CashAmount | None = spec_field(
+        None, description="Proceeds to sell. Omit to liquidate the entire account.", gt=0, unit="CAD"
+    )
+    cap_to_balance: bool = spec_field(
+        False, description="Sell the remaining brokerage balance when it is smaller than amount."
+    )
+    lot_order: Literal["fifo", "lifo", "highest_basis", "lowest_basis", "average_cost"] = spec_field(
+        "fifo",
+        description="Lot consumption rule: 'fifo', 'lifo', 'highest_basis', 'lowest_basis', or 'average_cost' "
+        "(pro-rata Canadian ACB pooling).",
+    )
+
+    @model_validator(mode="after")
+    def check_sale_date(self) -> "SellBrokerageEvent":
+        if self.at.year is None or self.at.month is None or self.at.day is None:
+            raise ValueError("A brokerage sale needs a full calendar date")
+        return self
+
+    def effective_date(self) -> date:
+        return date(self.at.year, self.at.month, self.at.day)
+
+
 class StopContributionEvent(EventBase):
     """Stop the person's recurring contributions into an account from this month: its contribution plans
     (for a 401k, the bucket's plan, or every bucket when unset) are removed, and a 401k's deferral percent for
@@ -4501,6 +4561,8 @@ Event = Annotated[
     | RRSPContributeEvent
     | WithdrawRegisteredEvent
     | RRSPToRRIFEvent
+    | TransferCashEvent
+    | SellBrokerageEvent
     | OntarioTaxStatementEvent
     | CharitableGiftEvent
     | CorporateOperatingCashEvent
@@ -4550,6 +4612,8 @@ EVENT_ACTIONS: tuple[str, ...] = (
     "rrsp_contribute",
     "withdraw_registered",
     "rrsp_to_rrif",
+    "transfer_cash",
+    "sell_brokerage",
     "ontario_tax_statement",
     "charitable_gift",
     "corporate_operating_cash",

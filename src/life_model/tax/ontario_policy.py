@@ -11,7 +11,14 @@ from .canadian_employment import EmploymentIncome
 from .canadian_equity import OptionExercise, ShareDisposition
 from .foreign_cash import ForeignCashTaxPool
 from .income import IncomeType
-from .ontario import AMT_CARRYFORWARD_YEARS, OntarioTax, income_tax, money, taxable_noneligible_dividends
+from .ontario import (
+    AMT_CARRYFORWARD_YEARS,
+    OntarioTax,
+    income_tax,
+    money,
+    taxable_eligible_dividends,
+    taxable_noneligible_dividends,
+)
 from .ontario_statement import OntarioTaxStatement
 from .payments import payments_of
 from .rrsp import check_deduction_date
@@ -20,6 +27,13 @@ from .tax import TaxesDue
 D = Decimal
 _ZERO = D(0)
 _CAPITAL_GAIN_TYPES = (IncomeType.SHORT_TERM_CAPITAL_GAIN, IncomeType.LONG_TERM_CAPITAL_GAIN)
+_CAPITAL_GAIN_SOURCES = ("brokerage_sale", "bond_fund_sale")
+_BROKERAGE_DIVIDEND_SOURCES = (
+    "dividend",
+    "foreign_dividend",
+    "eligible_canadian_dividend",
+    "noneligible_canadian_dividend",
+)
 
 
 def cash_reserve_for_owner(owner) -> Decimal:
@@ -42,6 +56,7 @@ class OntarioTaxInputs:
     repayable_ei: Decimal
     rate_year: int
     noneligible_dividends: Decimal = _ZERO
+    eligible_dividends: Decimal = _ZERO
     cpp_retirement: Decimal = _ZERO
     oas_benefits: Decimal = _ZERO
     oas_threshold: Decimal | None = None
@@ -63,6 +78,7 @@ class OntarioTaxInputs:
             rrsp_deduction=rrsp_deduction,
             repayable_ei=self.repayable_ei,
             noneligible_dividends=self.noneligible_dividends,
+            eligible_dividends=self.eligible_dividends,
             cpp_retirement=self.cpp_retirement,
             oas_benefits=self.oas_benefits,
             oas_threshold=self.oas_threshold,
@@ -475,11 +491,22 @@ class OntarioRetirementPolicy:
             facts.update(cpp_retirement=cpp, oas_benefits=oas, pension_withheld=pension_withheld)
         dividends = sum((amount for (y, _), amount in self.dividends.items() if y == year), D(0))
         dividends += sum((statement.noneligible_dividends for statement in statements), D(0))
+        eligible_divs, brok_noneligible_divs, foreign_divs = (
+            self.brokerage_dividends() if year == self.owner.model.year else (_ZERO, _ZERO, _ZERO)
+        )
+        dividends += brok_noneligible_divs
         if dividends:
             facts.update(
                 noneligible_dividends=dividends,
                 taxable_noneligible_dividends=taxable_noneligible_dividends(dividends, self.rate_year(year)),
             )
+        if eligible_divs:
+            facts.update(
+                eligible_dividends=eligible_divs,
+                taxable_eligible_dividends=taxable_eligible_dividends(eligible_divs, self.rate_year(year)),
+            )
+        if foreign_divs:
+            facts["foreign_dividends"] = foreign_divs
         if self.rrsp_deductions.get(year):
             facts["rrsp_deduction"] = self.rrsp_deductions[year]
         donations = sum((amount for (y, _), amount in self.donations.items() if y == year), D(0))
@@ -488,17 +515,35 @@ class OntarioRetirementPolicy:
         return facts
 
     def brokerage_gains(self) -> Decimal:
-        """Net brokerage capital gain recorded so far this year; short- and long-term sales are both capital."""
+        """Net brokerage and bond-fund capital gain recorded so far this year."""
         return money(
             sum(
                 (
                     D(str(entry.amount))
                     for entry in self.owner.income.entries
-                    if entry.income_type in _CAPITAL_GAIN_TYPES and entry.source == "brokerage_sale"
+                    if entry.income_type in _CAPITAL_GAIN_TYPES and entry.source in _CAPITAL_GAIN_SOURCES
                 ),
                 D(0),
             )
         )
+
+    def brokerage_dividends(self) -> tuple[Decimal, Decimal, Decimal]:
+        """Current-year brokerage cash dividends partitioned as (eligible, non-eligible, foreign)."""
+        eligible = _ZERO
+        noneligible = _ZERO
+        foreign = _ZERO
+        for entry in self.owner.income.entries:
+            if not entry.amount or entry.income_type != IncomeType.QUALIFIED_DIVIDEND:
+                continue
+            source = entry.source or ""
+            amount = D(str(entry.amount))
+            if source == "eligible_canadian_dividend":
+                eligible += amount
+            elif source == "noneligible_canadian_dividend":
+                noneligible += amount
+            elif source in ("dividend", "foreign_dividend"):
+                foreign += amount
+        return money(eligible), money(noneligible), money(foreign)
 
     def amt_carryforwards_before(self, year: int) -> dict[int, Decimal]:
         """Remaining unexpired federal AMT carryforwards by origin year available for ``year``."""
@@ -605,8 +650,11 @@ class OntarioRetirementPolicy:
             if not entry.amount:
                 continue
             source = entry.source or ""
-            if entry.income_type in _CAPITAL_GAIN_TYPES and source == "brokerage_sale":
+            if entry.income_type in _CAPITAL_GAIN_TYPES and source in _CAPITAL_GAIN_SOURCES:
                 # Included through working_income with the year's other capital gains and losses.
+                continue
+            if entry.income_type == IncomeType.QUALIFIED_DIVIDEND and source in _BROKERAGE_DIVIDEND_SOURCES:
+                # Included through working_income as Canadian eligible, non-eligible, or foreign dividends.
                 continue
             if entry.income_type == IncomeType.PRETAX_DISTRIBUTION and source.startswith(("RRSP ", "RRIF ")):
                 if age >= 65 and source.startswith("RRIF "):
@@ -624,7 +672,7 @@ class OntarioRetirementPolicy:
         facts = self.working_income(year)
         employment = facts["salary"] + facts["option_benefit"]
         gross += facts.get("reported_interest", D(0)) + facts.get("ei_benefits", D(0))
-        gross += facts.get("rental_net_income", D(0))
+        gross += facts.get("rental_net_income", D(0)) + facts.get("foreign_dividends", D(0))
         other_net = gross + employment + facts["included_capital_gain"] - facts["enhanced_cpp"]
         return OntarioTaxInputs(
             money(other_net),
@@ -637,6 +685,7 @@ class OntarioRetirementPolicy:
             facts.get("repayable_regular_ei", D(0)),
             self.rate_year(year),
             noneligible_dividends=facts.get("noneligible_dividends", D(0)),
+            eligible_dividends=facts.get("eligible_dividends", D(0)),
             cpp_retirement=facts.get("cpp_retirement", D(0)),
             oas_benefits=facts.get("oas_benefits", D(0)),
             oas_threshold=self.oas_recovery_thresholds.get(year),

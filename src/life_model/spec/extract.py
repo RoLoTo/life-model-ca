@@ -849,6 +849,7 @@ class _Extractor:
                     lots=spec_lots,
                     growth_pct=_growth(account._growth_rate_override),
                     dividend_yield_pct=account._dividend_yield_override,
+                    dividend_tax_treatment=account.dividend_tax_treatment,
                     reinvest_dividends=account.reinvest_dividends,
                     joint=getattr(account, "joint_owner", None) is not None,
                     **_invest(account),

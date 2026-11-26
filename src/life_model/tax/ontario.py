@@ -40,6 +40,11 @@ def taxable_noneligible_dividends(amount: Decimal, year: int) -> Decimal:
     return money(amount * ontario_rates(year).noneligible_dividend_grossup)
 
 
+def taxable_eligible_dividends(amount: Decimal, year: int) -> Decimal:
+    """Grossed-up taxable amount of domestic eligible dividends received in cash."""
+    return money(amount * ontario_rates(year).eligible_dividend_grossup)
+
+
 def bracket_tax(income: Decimal, brackets) -> Decimal:
     tax, lower = _ZERO, 0
     for upper, rate in brackets:
@@ -83,6 +88,7 @@ def income_tax(
     rrsp_deduction: Decimal = _ZERO,
     repayable_ei: Decimal = _ZERO,
     noneligible_dividends: Decimal = _ZERO,
+    eligible_dividends: Decimal = _ZERO,
     cpp_retirement: Decimal = _ZERO,
     oas_benefits: Decimal = _ZERO,
     oas_threshold: Decimal | None = None,
@@ -95,16 +101,17 @@ def income_tax(
     rates = ontario_rates(year) if projected_rates is None else projected_rates
     if eligible_pension < 0 or age < 18 or rrsp_deduction < 0:
         raise ValueError("Invalid Ontario pension income, age or RRSP deduction")
-    if noneligible_dividends < 0:
-        raise ValueError("Non-eligible dividends cannot be negative")
+    if noneligible_dividends < 0 or eligible_dividends < 0:
+        raise ValueError("Dividends cannot be negative")
     if donations < 0:
         raise ValueError("Charitable gifts cannot be negative")
     if amt_carryforward_available < 0:
         raise ValueError("AMT carryforward cannot be negative")
     taxable_dividends = taxable_noneligible_dividends(noneligible_dividends, year) if noneligible_dividends else _ZERO
+    taxable_eligible = taxable_eligible_dividends(eligible_dividends, year) if eligible_dividends else _ZERO
     if min(cpp_retirement, oas_benefits) < 0 or (oas_threshold is not None and oas_threshold <= 0):
         raise ValueError("Invalid Canadian pension income or OAS recovery threshold")
-    income = max(_ZERO, income + taxable_dividends + cpp_retirement + oas_benefits - rrsp_deduction)
+    income = max(_ZERO, income + taxable_dividends + taxable_eligible + cpp_retirement + oas_benefits - rrsp_deduction)
     if repayable_ei < 0:
         raise ValueError("Repayable EI benefits cannot be negative")
     ei_threshold = rates.ei_max_earnings * _EI_REPAYMENT_THRESHOLD_MULTIPLE
@@ -152,7 +159,9 @@ def income_tax(
     provincial_credits = (
         rates.ontario_basic_amount + age_ontario + min(eligible_pension, rates.ontario_pension_limit) + payroll_credits
     ) * rates.ontario_brackets[0][1]
-    federal_dividend_credit = money(taxable_dividends * rates.federal_noneligible_dividend_credit)
+    federal_dividend_credit = money(taxable_dividends * rates.federal_noneligible_dividend_credit) + money(
+        taxable_eligible * rates.federal_eligible_dividend_credit
+    )
     regular_federal = max(
         _ZERO,
         bracket_tax(taxable, rates.federal_brackets)
@@ -165,7 +174,7 @@ def income_tax(
     # fourth federal bracket threshold.
     positive_gain = max(_ZERO, net_capital_gain)
     unincluded_capital_gain = positive_gain - money(positive_gain * D(".5"))
-    dividend_grossup = taxable_dividends - noneligible_dividends
+    dividend_grossup = (taxable_dividends - noneligible_dividends) + (taxable_eligible - eligible_dividends)
     adjusted_taxable_income = max(
         _ZERO,
         taxable + unincluded_capital_gain + taxable_income_deduction - dividend_grossup,
@@ -194,7 +203,9 @@ def income_tax(
         - ontario_amt_recovery,
     )
     surtax = sum(rate * max(_ZERO, basic_province - threshold) for threshold, rate in rates.ontario_surtax)
-    provincial_dividend_credit = money(taxable_dividends * rates.ontario_noneligible_dividend_credit)
+    provincial_dividend_credit = money(taxable_dividends * rates.ontario_noneligible_dividend_credit) + money(
+        taxable_eligible * rates.ontario_eligible_dividend_credit
+    )
     # ON428 applies the dividend credit after surtax, before the Ontario tax reduction.
     before_reduction = max(_ZERO, basic_province + surtax - provincial_dividend_credit)
     reduction = max(_ZERO, min(before_reduction, 2 * rates.ontario_basic_reduction - before_reduction))

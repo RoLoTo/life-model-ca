@@ -35,7 +35,7 @@ error: put what already happened into the starting state (for example a marriage
 
 ## Event actions
 
-`marry`, `divorce`, `retire`, `change_job`, `move`, `buy_home`, `sell_home`, `convert_home_to_ontario_rental`, `record_home_valuation`, `one_time_expense`, `recurring_expense`, `change_spending`, `add_account`, `reserve_cash`, `contribute`, `rrsp_contribute`, `withdraw_registered`, `rrsp_to_rrif`, `ontario_tax_statement`, `charitable_gift`, `corporate_operating_cash`, `corporate_investment_transfer`, `corporate_payroll`, `corporate_pay_dividend`, `corporate_charitable_gift`, `corporate_income_tax`, `sell_private_shares`, `exercise_private_options`, `convert_currency`, `move_foreign_cash`, `stop_contribution`, `change_contribution`, `convert_to_roth`, `claim_social_security`, `die`, `refinance`, `renew_mortgage`, `pay_mortgage_at_maturity`, `prepay_mortgage`, `heloc_draw`, `draw_bridge`, `repay_bridge`, `prepay_bridge`, `disability`.
+`marry`, `divorce`, `retire`, `change_job`, `move`, `buy_home`, `sell_home`, `convert_home_to_ontario_rental`, `record_home_valuation`, `one_time_expense`, `recurring_expense`, `change_spending`, `add_account`, `reserve_cash`, `contribute`, `rrsp_contribute`, `withdraw_registered`, `rrsp_to_rrif`, `transfer_cash`, `sell_brokerage`, `ontario_tax_statement`, `charitable_gift`, `corporate_operating_cash`, `corporate_investment_transfer`, `corporate_payroll`, `corporate_pay_dividend`, `corporate_charitable_gift`, `corporate_income_tax`, `sell_private_shares`, `exercise_private_options`, `convert_currency`, `move_foreign_cash`, `stop_contribution`, `change_contribution`, `convert_to_roth`, `claim_social_security`, `die`, `refinance`, `renew_mortgage`, `pay_mortgage_at_maturity`, `prepay_mortgage`, `heloc_draw`, `draw_bridge`, `repay_bridge`, `prepay_bridge`, `disability`.
 
 ## HouseholdSpec
 
@@ -50,7 +50,7 @@ A complete household: metadata, optional economy overrides, people, relationship
 | `corporations` | list[[CorporationSpec](#corporationspec)] |  | [] |  | Wholly owned Canadian corporations with separate assets and obligations. |
 | `relationships` | [Relationships](#relationships) |  | {} |  | Marriages. |
 | `withdrawal_order` | list[`"bank"` \\| `"fixed_income"` \\| `"brokerage"` \\| `"roth_basis"` \\| `"pretax"` \\| `"roth_earnings"` \\| `"reserve"` \\| `"tax_free"` \\| `"corporate_dividend"`] (optional) |  | — | `Family.withdrawal_order` | Household payment waterfall: the order sources are drawn to pay bills and taxes, across every member. Each source exactly once, starting with 'bank'. Defaults to bank, fixed_income, brokerage, roth_basis, pretax, roth_earnings, reserve (fixed_income and reserve may be left out: they then take those places). Canadian forecasts may add corporate_dividend to cover monthly bills and dated Ontario tax payments using corporations with shortfall_dividends_from set. |
-| `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [ConvertHomeToOntarioRentalEvent](#converthometoontariorentalevent), [HomeValuationEvent](#homevaluationevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [RRSPContributeEvent](#rrspcontributeevent), [WithdrawRegisteredEvent](#withdrawregisteredevent), [RRSPToRRIFEvent](#rrsptorrifevent), [OntarioTaxStatementEvent](#ontariotaxstatementevent), [CharitableGiftEvent](#charitablegiftevent), [CorporateOperatingCashEvent](#corporateoperatingcashevent), [CorporateInvestmentTransferEvent](#corporateinvestmenttransferevent), [CorporatePayrollEvent](#corporatepayrollevent), [CorporatePayDividendEvent](#corporatepaydividendevent), [CorporateCharitableGiftEvent](#corporatecharitablegiftevent), [CorporateIncomeTaxEvent](#corporateincometaxevent), [SellPrivateSharesEvent](#sellprivatesharesevent), [ExercisePrivateOptionsEvent](#exerciseprivateoptionsevent), [ConvertCurrencyEvent](#convertcurrencyevent), [MoveForeignCashEvent](#moveforeigncashevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [BridgePrepaymentEvent](#bridgeprepaymentevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
+| `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [ConvertHomeToOntarioRentalEvent](#converthometoontariorentalevent), [HomeValuationEvent](#homevaluationevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [RRSPContributeEvent](#rrspcontributeevent), [WithdrawRegisteredEvent](#withdrawregisteredevent), [RRSPToRRIFEvent](#rrsptorrifevent), [TransferCashEvent](#transfercashevent), [SellBrokerageEvent](#sellbrokerageevent), [OntarioTaxStatementEvent](#ontariotaxstatementevent), [CharitableGiftEvent](#charitablegiftevent), [CorporateOperatingCashEvent](#corporateoperatingcashevent), [CorporateInvestmentTransferEvent](#corporateinvestmenttransferevent), [CorporatePayrollEvent](#corporatepayrollevent), [CorporatePayDividendEvent](#corporatepaydividendevent), [CorporateCharitableGiftEvent](#corporatecharitablegiftevent), [CorporateIncomeTaxEvent](#corporateincometaxevent), [SellPrivateSharesEvent](#sellprivatesharesevent), [ExercisePrivateOptionsEvent](#exerciseprivateoptionsevent), [ConvertCurrencyEvent](#convertcurrencyevent), [MoveForeignCashEvent](#moveforeigncashevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [BridgePrepaymentEvent](#bridgeprepaymentevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
 | `actuals` | map[integer → [ActualRecords](#actualrecords)] (optional) |  | — |  | What the household's real documents say, by tax year (filed 1040 lines, W-2s, 1099s, statement balances): read by 'life-model reconcile' and the backtest, ignored by the builder. Keep real documents in my-models/ (git-ignored). |
 
 ## Meta
@@ -509,7 +509,8 @@ Builds: `BrokerageAccount`.
 | `balance` | number (optional) | USD | — | `BrokerageAccount.balance` | Balance, seeded as one lot with basis equal to the balance (no embedded gain). Mutually exclusive with lots. |
 | `lots` | list[[TaxLot](#taxlot)] (optional) |  | — | `BrokerageAccount.lots` | Opening tax lots (value, cost basis, acquired year and month). |
 | `growth_pct` | number \\| `"economy"` | percent (typically > 1) | `"economy"` | `BrokerageAccount.growth_pct` | Total annual return; 'economy' follows the equity return (and varies under stochastic runs). |
-| `dividend_yield_pct` | number (optional) | percent | — | `BrokerageAccount.dividend_yield_pct` | Qualified-dividend yield carved out of the total return (the rest is untaxed price growth). Unset: the configured accounts.brokerage.dividend_yield, which is 0 in the packaged defaults (pure price appreciation, no dividends); enter the fund's yield from the statement. |
+| `dividend_yield_pct` | number (optional) | percent | — | `BrokerageAccount.dividend_yield_pct` | Dividend yield carved out of the total return (the rest is untaxed price growth). Unset: the configured accounts.brokerage.dividend_yield, which is 0 in the packaged defaults (pure price appreciation, no dividends); enter the fund's yield from the statement. |
+| `dividend_tax_treatment` | `"qualified"` \\| `"eligible_canadian"` \\| `"noneligible_canadian"` \\| `"foreign"` (optional) |  | — | `BrokerageAccount.dividend_tax_treatment` | Tax classification for brokerage dividends. Unset defaults to qualified dividends on US returns and ordinary foreign dividends on Ontario returns; set 'eligible_canadian' or 'noneligible_canadian' for Canadian dividend gross-up and tax credits. |
 | `allocation_pct` | map[`"equity"` \\| `"bond"` \\| `"cash"` → number] (optional) | percent | — | `Investment.allocation` | Asset allocation in percent by asset class (equity, bond, cash; sums to 100), e.g. {equity: 70, bond: 30}: the account grows at the blend of the economy's returns, rebalanced yearly. A numeric growth_pct overrides it. |
 | `expense_ratio_pct` | number (optional) | percent | — | `Investment.expense_ratio_pct` | Fund expense ratio (percent a year), netted out of the return. |
 | `reinvest_dividends` | boolean |  | `True` | `BrokerageAccount.reinvest_dividends` | False pays dividends to the bank instead. |
@@ -1694,6 +1695,41 @@ Transfer all or part of an owned RRSP directly to an owned RRIF.
 | `rrif` | string |  | **required** |  | Id of the receiving RRIF. |
 | `amount` | Decimal (optional) | CAD | — |  | Principal to transfer. Omit to transfer all. |
 | `cap_to_balance` | boolean |  | `False` |  | Allow a partial transfer to move the remaining RRSP balance when smaller than amount. |
+
+## TransferCashEvent
+
+Move settled cash between two of the owner's bank accounts on a calendar date.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"transfer_cash"` |  | **required** |  |  |
+| `from_bank` | string |  | **required** |  | Id of the owner's source bank account. |
+| `to_bank` | string |  | **required** |  | Id of the owner's destination bank account. |
+| `amount` | Decimal | CAD | **required** |  | Cash amount to transfer. |
+| `cap_to_balance` | boolean |  | `False` |  | Transfer the remaining source balance when it is smaller than amount. |
+
+## SellBrokerageEvent
+
+Sell from a named brokerage account into one of the owner's bank accounts on a calendar date.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `id` | string (optional) |  | — |  | Event id (needed to anchor relative events). |
+| `at` | [At](#at) |  | **required** |  | When the event happens: {year}, {age} or {relative: {after, years}}. |
+| `person` | string |  | **required** |  | Person the event applies to. |
+| `name` | string (optional) |  | — |  | Description shown in the event list. |
+| `same_day_order` | integer |  | `0` |  | For events on the same date with equal engine priority and dependency depth, lower values run first. Automatic settlement and account-opening priorities still apply. |
+| `action` | `"sell_brokerage"` |  | **required** |  |  |
+| `account` | string |  | **required** |  | Id of the owner's brokerage account to sell from. |
+| `bank` | string |  | **required** |  | Id of the owner's bank account that receives the proceeds. |
+| `amount` | Decimal (optional) | CAD | — |  | Proceeds to sell. Omit to liquidate the entire account. |
+| `cap_to_balance` | boolean |  | `False` |  | Sell the remaining brokerage balance when it is smaller than amount. |
+| `lot_order` | `"fifo"` \\| `"lifo"` \\| `"highest_basis"` \\| `"lowest_basis"` \\| `"average_cost"` |  | `"fifo"` |  | Lot consumption rule: 'fifo', 'lifo', 'highest_basis', 'lowest_basis', or 'average_cost' (pro-rata Canadian ACB pooling). |
 
 ## OntarioTaxStatementEvent
 

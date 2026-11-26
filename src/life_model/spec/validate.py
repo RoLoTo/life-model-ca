@@ -1530,6 +1530,23 @@ class _SpecChecker:
                 self.error(f"{path}.account.established_year", "use the year of the RRIF opening event")
             if isinstance(event, s.RegisteredCashEvent):
                 self.check_registered_cash_event(event, path, item_ids)
+            if isinstance(event, s.TransferCashEvent):
+                src = item_ids.get(event.from_bank)
+                dst = item_ids.get(event.to_bank)
+                self.check_available_bank(
+                    src[2] if src is not None and src[0] == event.person else None, f"{path}.from_bank"
+                )
+                self.check_available_bank(
+                    dst[2] if dst is not None and dst[0] == event.person else None, f"{path}.to_bank"
+                )
+            if isinstance(event, s.SellBrokerageEvent):
+                acct = item_ids.get(event.account)
+                if acct is None or acct[0] != event.person or not isinstance(acct[2], s.BrokerageAccount):
+                    self.error(f"{path}.account", "must be a brokerage account owned by the person")
+                bank = item_ids.get(event.bank)
+                self.check_available_bank(
+                    bank[2] if bank is not None and bank[0] == event.person else None, f"{path}.bank"
+                )
             if isinstance(event, s.CorporateEvent):
                 corp = corporations.get(event.corporation)
                 if corp is None or corp.shareholder != event.person:

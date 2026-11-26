@@ -100,6 +100,7 @@ class BrokerageAccount(Investment):
         lots: "Sequence[Lot | TaxLot] | None" = None,
         growth_pct: float | None = None,
         dividend_yield_pct: float | None = None,
+        dividend_tax_treatment: str | None = None,
         reinvest_dividends: bool = True,
         allocation: "dict[str, float] | None" = None,
         expense_ratio_pct: float = 0.0,
@@ -139,8 +140,11 @@ class BrokerageAccount(Investment):
             allocation=allocation,
             expense_ratio_pct=expense_ratio_pct,
         )
+        if dividend_tax_treatment not in (None, "qualified", "eligible_canadian", "noneligible_canadian", "foreign"):
+            raise ValueError(f"Unsupported dividend_tax_treatment: {dividend_tax_treatment!r}")
         self.company = company
         self._dividend_yield_override = dividend_yield_pct
+        self.dividend_tax_treatment = dividend_tax_treatment
         self.reinvest_dividends = reinvest_dividends
         # Basis is tracked per lot; an opening balance is treated as freshly purchased at cost.
         self.lots: list[TaxLot] = []
@@ -224,7 +228,12 @@ class BrokerageAccount(Investment):
         self._post_growth(appreciation)
 
         if dividend > 0:
-            self.add_income(IncomeType.QUALIFIED_DIVIDEND, dividend, source="dividend")
+            dividend_source = (
+                "dividend"
+                if self.dividend_tax_treatment in (None, "qualified")
+                else f"{self.dividend_tax_treatment}_dividend"
+            )
+            self.add_income(IncomeType.QUALIFIED_DIVIDEND, dividend, source=dividend_source)
             if self.reinvest_dividends:
                 self.deposit(dividend)
                 self.model.ledger.post(
@@ -278,8 +287,8 @@ class BrokerageAccount(Investment):
         self.balance += amount
         self.lots.append(self._lot(amount, cost_basis, acquired_year, acquired_month))
 
-    def withdraw(self, amount: float) -> float:
-        """Sell ``amount`` of the account, consuming lots FIFO and posting the realized gain.
+    def withdraw(self, amount: float, *, lot_order: str = "fifo") -> float:
+        """Sell ``amount`` of the account, consuming lots by ``lot_order`` and posting the realized gain.
 
         Each consumed lot's gain is classified long-term when the lot has been held 12 months or
         more and short-term otherwise, then posted to the owner's income ledger so the tax unit
@@ -288,30 +297,76 @@ class BrokerageAccount(Investment):
         Returns:
             float: Amount actually withdrawn.
         """
-        withdrawn, long_term_gain, short_term_gain = self.sell(amount)
+        withdrawn, long_term_gain, short_term_gain = self.sell(amount, lot_order=lot_order)
         if long_term_gain != 0:
             self.add_income(IncomeType.LONG_TERM_CAPITAL_GAIN, long_term_gain, source="brokerage_sale")
         if short_term_gain != 0:
             self.add_income(IncomeType.SHORT_TERM_CAPITAL_GAIN, short_term_gain, source="brokerage_sale")
         return withdrawn
 
-    def sell(self, amount: float) -> tuple[float, float, float]:
-        """Consume lots FIFO for ``amount`` without posting anything to the income ledger.
+    def sell(self, amount: float, *, lot_order: str = "fifo") -> tuple[float, float, float]:
+        """Consume lots for ``amount`` without posting anything to the income ledger.
+
+        ``lot_order`` may be ``"fifo"`` (oldest first), ``"lifo"`` (newest first),
+        ``"highest_basis"`` (highest cost-basis-to-value ratio first), ``"lowest_basis"``
+        (lowest basis-to-value ratio first), or ``"average_cost"`` (pro-rata across all lots,
+        matching Canadian identical-property ACB pooling).
 
         Returns:
             tuple: ``(withdrawn, long_term_gain, short_term_gain)``. Gains may be negative when
             lots are sold at a loss.
         """
+        if lot_order not in ("fifo", "lifo", "highest_basis", "lowest_basis", "average_cost"):
+            raise ValueError(f"Unsupported lot_order: {lot_order!r}")
         if amount < 0:
             return 0.0, 0.0, 0.0  # Cannot withdraw negative amounts
         actual_withdrawal = min(amount, self.balance)
+        total_before = sum(lot.value for lot in self.lots)
         self.balance -= actual_withdrawal
+
+        if lot_order == "average_cost":
+            if actual_withdrawal <= 0 or total_before <= 0:
+                return actual_withdrawal, 0.0, 0.0
+            fraction = min(1.0, actual_withdrawal / total_before)
+            long_term_gain = 0.0
+            short_term_gain = 0.0
+            for lot in self.lots:
+                take = lot.value * fraction
+                basis_used = lot.cost_basis * fraction
+                gain = take - basis_used
+                if self._is_long_term(lot):
+                    long_term_gain += gain
+                else:
+                    short_term_gain += gain
+                lot.value -= take
+                lot.cost_basis -= basis_used
+            self.lots = [lot for lot in self.lots if lot.value > 1e-9]
+            return actual_withdrawal, long_term_gain, short_term_gain
 
         remaining = actual_withdrawal
         long_term_gain = 0.0
         short_term_gain = 0.0
-        while remaining > 0 and self.lots:
-            lot = self.lots[0]
+        if lot_order == "fifo":
+            indices = list(range(len(self.lots)))
+        elif lot_order == "lifo":
+            indices = list(range(len(self.lots) - 1, -1, -1))
+        elif lot_order == "highest_basis":
+            indices = sorted(
+                range(len(self.lots)),
+                key=lambda i: -(self.lots[i].cost_basis / self.lots[i].value if self.lots[i].value > 0 else 1.0),
+            )
+        else:
+            indices = sorted(
+                range(len(self.lots)),
+                key=lambda i: self.lots[i].cost_basis / self.lots[i].value if self.lots[i].value > 0 else 1.0,
+            )
+
+        for idx in indices:
+            if remaining <= 0:
+                break
+            lot = self.lots[idx]
+            if lot.value <= 0:
+                continue
             take = min(remaining, lot.value)
             # Basis is consumed in the same proportion as value, so a partial sale of a lot
             # realizes a proportional slice of its gain and leaves the rest embedded.
@@ -324,8 +379,7 @@ class BrokerageAccount(Investment):
             lot.value -= take
             lot.cost_basis -= basis_used
             remaining -= take
-            if lot.value <= 0:
-                self.lots.pop(0)
+        self.lots = [lot for lot in self.lots if lot.value > 1e-9]
 
         return actual_withdrawal, long_term_gain, short_term_gain
 

@@ -32,6 +32,9 @@ class OntarioRates(BaseModel):
     noneligible_dividend_grossup: Decimal
     federal_noneligible_dividend_credit: Decimal
     ontario_noneligible_dividend_credit: Decimal
+    eligible_dividend_grossup: Decimal
+    federal_eligible_dividend_credit: Decimal
+    ontario_eligible_dividend_credit: Decimal
     cpp_base_rate: Decimal
     cpp_additional_rate: Decimal
     cpp2_rate: Decimal

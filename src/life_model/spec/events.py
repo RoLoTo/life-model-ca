@@ -351,6 +351,18 @@ def _compile_one(builder: "_Builder", timing: EventTiming, event, year: int) -> 
         name = _name(event, f"{person.name} contributes to an RRSP")
         return [_life_event(year, name, event, _rrsp_contribute, builder, person, event)]
 
+    if action == "transfer_cash":
+        name = _name(event, f"{person.name} transfers cash")
+        transfer = _life_event(year, name, event, _transfer_cash, builder, person, event)
+        transfer.same_day_priority = -3
+        return [transfer]
+
+    if action == "sell_brokerage":
+        name = _name(event, f"{person.name} sells brokerage holdings")
+        sale = _life_event(year, name, event, _sell_brokerage, builder, person, event)
+        sale.same_day_priority = -3
+        return [sale]
+
     if action == "reserve_cash":
         name = _name(event, "Earmarked cash")
         return [_life_event(year, name, event, _reserve_cash, builder, person, event, name)]
@@ -1022,6 +1034,67 @@ def _rrsp_contribute(builder: "_Builder", person, event: s.RRSPContributeEvent) 
         deduction_year=event.deduction_year,
         pool_cash=event.pool_cash,
         room_fraction=event.room_fraction,
+    )
+
+
+def _transfer_cash(builder: "_Builder", person, event: s.TransferCashEvent) -> None:
+    from ..account.bank import BankAccount
+    from ..ledger import FlowKind
+
+    source = builder.built.items.get(event.from_bank)
+    destination = builder.built.items.get(event.to_bank)
+    if not isinstance(source, BankAccount) or source.owner is not person:
+        raise ValueError("Source bank account must be open and owned by the transferor")
+    if not isinstance(destination, BankAccount) or destination.owner is not person:
+        raise ValueError("Destination bank account must be open and owned by the transferor")
+    amount = float(event.amount)
+    if event.cap_to_balance:
+        amount = min(amount, source.balance)
+    elif source.balance + 1e-6 < amount:
+        raise ValueError(f"Insufficient balance in {event.from_bank!r} for cash transfer on {event.effective_date()}")
+    if amount <= 0:
+        return
+    moved = source.withdraw(amount)
+    destination.deposit(moved)
+    builder.model.ledger.post(
+        moved,
+        FlowKind.TRANSFER,
+        from_account=source,
+        to_account=destination,
+        cause=f"Cash transfer on {event.effective_date()}",
+        agent=person,
+    )
+
+
+def _sell_brokerage(builder: "_Builder", person, event: s.SellBrokerageEvent) -> None:
+    from ..account.bank import BankAccount
+    from ..account.brokerage import BrokerageAccount
+    from ..ledger import FlowKind
+
+    account = builder.built.items.get(event.account)
+    bank = builder.built.items.get(event.bank)
+    if not isinstance(account, BrokerageAccount) or account.owner is not person:
+        raise ValueError("Brokerage account must be open and owned by the seller")
+    if not isinstance(bank, BankAccount) or bank.owner is not person:
+        raise ValueError("Destination bank account must be open and owned by the seller")
+    amount = account.balance if event.amount is None else float(event.amount)
+    if event.cap_to_balance:
+        amount = min(amount, account.balance)
+    elif account.balance + 1e-6 < amount:
+        raise ValueError(f"Insufficient balance in {event.account!r} for brokerage sale on {event.effective_date()}")
+    if amount <= 0:
+        return
+    proceeds = account.withdraw(amount, lot_order=event.lot_order)
+    if proceeds <= 0:
+        return
+    bank.deposit(proceeds)
+    builder.model.ledger.post(
+        proceeds,
+        FlowKind.TRANSFER,
+        from_account=account,
+        to_account=bank,
+        cause=f"Brokerage sale ({event.lot_order}) on {event.effective_date()}",
+        agent=person,
     )
 
 
