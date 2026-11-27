@@ -3,9 +3,11 @@
 # Use of this source code is governed by an MIT license:
 # https://github.com/sw23/life-model/blob/main/LICENSE
 
+from collections.abc import Mapping
+
 from ..model import LifeModel, LifeModelAgent
 from ..tax.federal import FilingStatus, get_federal_standard_deduction
-from .tax_unit import DEFAULT_WITHDRAWAL_ORDER, TaxUnit, validate_withdrawal_order
+from .tax_unit import DEFAULT_WITHDRAWAL_ORDER, TaxUnit, validate_withdrawal_floors, validate_withdrawal_order
 
 
 class Family(LifeModelAgent):
@@ -18,7 +20,13 @@ class Family(LifeModelAgent):
 
     STATS_OWNED = frozenset({"stat_debt"})
 
-    def __init__(self, model: LifeModel, *args, withdrawal_order: "tuple[str, ...] | None" = None):
+    def __init__(
+        self,
+        model: LifeModel,
+        *args,
+        withdrawal_order: "tuple[str, ...] | None" = None,
+        withdrawal_floors: "Mapping[str, float] | None" = None,
+    ):
         """Family
 
         Args:
@@ -28,6 +36,11 @@ class Family(LifeModelAgent):
                 units use (see :data:`~life_model.people.tax_unit.DEFAULT_WITHDRAWAL_ORDER`, the
                 default: bank, fixed_income, brokerage, roth_basis, pretax, roth_earnings, reserve).
                 Keyword-only.
+            withdrawal_floors (Mapping[str, float], optional): Household-wide minimum combined
+                balance to keep in each named non-bank waterfall source (``"roth"`` covers both
+                ``"roth_basis"`` and ``"roth_earnings"``). Waterfall draws stop at each floor and
+                spill to the next source; statutory RMDs, HSA medical reimbursements, Roth
+                conversions, contribution plans and explicit events still run. Keyword-only.
         """
         super().__init__(model)
         self.members = list(args)
@@ -35,6 +48,17 @@ class Family(LifeModelAgent):
         # normalizes it.
         validate_withdrawal_order(withdrawal_order)
         self.withdrawal_order = DEFAULT_WITHDRAWAL_ORDER if withdrawal_order is None else tuple(withdrawal_order)
+        self._withdrawal_floors: dict[str, float] = {}
+        self.withdrawal_floors = withdrawal_floors
+
+    @property
+    def withdrawal_floors(self) -> dict[str, float]:
+        """Household-wide minimum combined balance to keep in each named non-bank waterfall source."""
+        return dict(self._withdrawal_floors)
+
+    @withdrawal_floors.setter
+    def withdrawal_floors(self, value: "Mapping[str, float] | None") -> None:
+        self._withdrawal_floors = validate_withdrawal_floors(value)
 
     @property
     def federal_deductions(self) -> float:
@@ -98,7 +122,9 @@ class Family(LifeModelAgent):
         Returns:
             float: Balance remaining after paying bills.
         """
-        for unit in TaxUnit.build_units(self):
+        units = TaxUnit.build_units(self)
+        TaxUnit.allocate_floor_budgets(units)
+        for unit in units:
             if spending_balance <= 0:
                 return 0
             spending_balance = unit.pay_bills(spending_balance)
@@ -112,12 +138,16 @@ class Family(LifeModelAgent):
     def step(self):
         # Family performs no tax math. It groups its members into filing units and lets each
         # tax unit pay the month's bills (spending, one-time expenses, carried debt).
-        for unit in TaxUnit.build_units(self):
+        units = TaxUnit.build_units(self)
+        TaxUnit.allocate_floor_budgets(units)
+        for unit in units:
             unit.settle_month()
 
     def on_year_end(self):
         # After December's bills: each tax unit settles the year's taxes.
-        for unit in TaxUnit.build_units(self):
+        units = TaxUnit.build_units(self)
+        TaxUnit.allocate_floor_budgets(units)
+        for unit in units:
             unit.settle_year()
 
     def collect_stats(self):

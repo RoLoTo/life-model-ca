@@ -229,13 +229,16 @@ def silent_defaults() -> list[tuple[str, str, str]]:
             ),
         ),
         (
-            "`Family(withdrawal_order=None)`",
-            ", ".join(DEFAULT_WITHDRAWAL_ORDER),
+            "`Family(withdrawal_order=None, withdrawal_floors=None)`",
+            f"{', '.join(DEFAULT_WITHDRAWAL_ORDER)}; no floors",
             (
                 "The household payment waterfall: bills and taxes are paid from banks, then non-reserve fixed income, "
                 "brokerage sales, Roth basis, pre-tax withdrawals (sized for their own tax and penalty), Roth "
                 "earnings, then emergency reserves (reserve banks and fixed income); any gap is carried as debt "
-                "(`shortfall_debt` events)."
+                "(`shortfall_debt` events). `withdrawal_floors` caps waterfall draws per non-bank source "
+                "household-wide (`'roth'` covers both Roth steps) so each source keeps at least its floor before "
+                "spilling to the next source; RMDs, HSA medical reimbursements, Roth conversions, contribution "
+                "plans and explicit events still run."
             ),
         ),
         (

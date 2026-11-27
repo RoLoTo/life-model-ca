@@ -191,11 +191,36 @@ def early_retiree(model):
     return [person], steps
 
 
+def two_singles_with_floors(model):
+    """Two unmarried tax units sharing binding household withdrawal floors across brokerage, pretax and Roth."""
+    family = Family(model, withdrawal_floors={"brokerage": 120_000, "pretax": 80_000, "roth": 40_000})
+    people = {}
+
+    def person_a():
+        people["a"] = Person(family, "Alex", age=62, retirement_age=60, spending=Spending(model, base_annual=48_000))
+
+    def person_b():
+        people["b"] = Person(family, "Sam", age=62, retirement_age=60, spending=Spending(model, base_annual=42_000))
+
+    steps = [
+        lambda: BankAccount(people["a"], company="Bank A", balance=5_000, interest_pct=1.0),
+        lambda: BankAccount(people["b"], company="Bank B", balance=3_000, interest_pct=2.0),
+        lambda: BrokerageAccount(people["a"], company="Broker A", balance=110_000, growth_pct=4.0),
+        lambda: BrokerageAccount(people["b"], company="Broker B", balance=70_000, growth_pct=4.0),
+        lambda: TraditionalIRA(people["a"], balance=90_000, growth_pct=4.0),
+        lambda: TraditionalIRA(people["b"], balance=50_000, growth_pct=4.0),
+        lambda: RothIRA(people["a"], balance=40_000, growth_pct=4.0),
+        lambda: RothIRA(people["b"], balance=30_000, growth_pct=4.0),
+    ]
+    return [person_a, person_b], steps
+
+
 HOUSEHOLDS = {
     "single_saver": single_saver,
     "married_homeowners": married_homeowners,
     "retired_couple": retired_couple,
     "early_retiree": early_retiree,
+    "two_singles_with_floors": two_singles_with_floors,
 }
 
 

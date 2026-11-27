@@ -68,10 +68,12 @@ fixtures use only synthetic names (a test enforces an allowlist).
   at -100 in `pre_step`), then construction order.
 - **Settlement.** `Family.step` groups members into `TaxUnit`s (`people/tax_unit.py`): single filers
   and married couples (joint or separate). Each unit pays the month's bills, and in December the
-  year's taxes, through one **household waterfall** (`Family(withdrawal_order=)`, default bank -> fixed income ->
-  brokerage -> Roth basis -> pre-tax (sized for its own tax and penalty) -> Roth earnings -> emergency
-  reserves) across every member;
-  an unpaid gap becomes debt (`shortfall_debt` events). Settlement is order-independent:
+  year's taxes, through one **household waterfall** (`Family(withdrawal_order=, withdrawal_floors=)`,
+  default bank -> fixed income -> brokerage -> Roth basis -> pre-tax (sized for its own tax and
+  penalty) -> Roth earnings -> emergency reserves) across every member; optional household-wide
+  `withdrawal_floors` cap waterfall draws per non-bank source (`"roth"` covers both Roth steps) while
+  leaving RMDs, HSA medical reimbursements, Roth conversions, contribution plans and explicit events
+  unaffected. An unpaid gap becomes debt (`shortfall_debt` events). Settlement is order-independent:
   `tests/test_construction_order.py` builds households in shuffled construction orders and requires
   identical frames.
 - **The federal return.** `TaxUnit.get_income_taxes_due` computes the return the
@@ -221,7 +223,10 @@ notes go in the git-ignored `CLAUDE.local.md`.
   `Salary` growth default to 0%; rent rises 5%; investments grow at 7%; cash earns 0% and surplus
   cash is never invested without a `SavingsPolicy`; every child costs the configured bands on top of
   spending; health costs stop with the job (no coverage before Medicare, no Medicare premiums without
-  `healthcare`); a person with no state files in `DEFAULT` (a flat 6% of the federal-style base);
+  `healthcare`); funeral and final-year medical costs are charged only for a person with a `healthcare`
+  block; long-term care is off unless `healthcare.long_term_care`, and an unpaid care cost becomes debt
+  unless `healthcare.medicaid` (an `ltc` policy without `long_term_care` only pays premiums); a person
+  with no state files in `DEFAULT` (a flat 6% of the federal-style base);
   taxes are paid as a December lump unless a job withholds or the person pays estimates. An unknown
   state code is an error (`UnknownStateError`), never a silent fallback. The spec validator warns or
   errors on these (a spec keeps a warning on purpose with `meta.accepted_warnings`); direct

@@ -145,6 +145,7 @@ class _Extractor:
             corporations=self.corporations(),
             relationships=self.relationships(people),
             withdrawal_order=self.withdrawal_order(),
+            withdrawal_floors=self.withdrawal_floors(),
             events=self.events(),
         )
 
@@ -205,6 +206,16 @@ class _Extractor:
         for family in (a for a in self.model.agents if isinstance(a, Family)):
             if family.members and tuple(family.withdrawal_order) != DEFAULT_WITHDRAWAL_ORDER:
                 return list(family.withdrawal_order)
+        return None
+
+    def withdrawal_floors(self) -> dict | None:
+        from ..people.family import Family
+        from ..people.tax_unit import validate_withdrawal_floors
+
+        for family in (a for a in self.model.agents if isinstance(a, Family)):
+            floors = validate_withdrawal_floors(getattr(family, "withdrawal_floors", None))
+            if family.members and floors:
+                return floors
         return None
 
     def meta(self) -> s.Meta:
@@ -1100,7 +1111,8 @@ class _Extractor:
             "term_months": None if whole else loan.term_months,
             "payment_monthly": None if abs(payment - default_payment) < 1e-9 else payment,
             "origination": None if loan.origination is None else f"{loan.origination[0]}-{loan.origination[1]:02d}",
-            "payments_made": None if made == 0 or made_from_origination is not None else made,
+            # The origination implies first payment the month after; a refinance pays in its own month.
+            "payments_made": None if made == 0 or made == made_from_origination else made,
             "extra_principal_monthly": loan.extra_principal_monthly,
             "schedule": getattr(loan, "schedule", "contract"),
         }
@@ -1169,11 +1181,11 @@ class _Extractor:
                         name=_none_if(line.name, default_name),
                         credit_limit=line.credit_limit,
                         rate_pct=line.yearly_interest_rate,
+                        interest_mode=line.interest_mode,
                         drawn_principal=float(line.drawn_principal),
+                        capitalized_interest=float(line.capitalized_interest),
                         accrued_interest=float(line.accrued_interest),
                         accrued_through=line.accrued_through,
-                        interest_mode=line.interest_mode,
-                        capitalized_interest=float(line.capitalized_interest),
                         rental_home=rental_home_id,
                         eligible_principal=float(line.eligible_principal),
                         eligible_accrued_interest=float(line.eligible_accrued_interest),
@@ -1211,6 +1223,7 @@ class _Extractor:
                 start_year = getattr(m, "spec_start_year", None) if not self.stepped else None
                 if start_year is None and m.start_date is not None and getattr(m, "spec_loan_inputs", None) is None:
                     start_year = _none_if(int(m.start_date), start)
+                renewal_state = m.renewal_state
                 privilege = None
                 if m.prepayment_privilege is not None:
                     cap = m.prepayment_privilege
@@ -1222,16 +1235,15 @@ class _Extractor:
                         basis_amount=float(cap.basis_amount),
                         used=float(cap.used_for(as_of)),
                     )
-                renewal_state = m.renewal_state
                 mortgage = s.Mortgage(
                     start_year=start_year,
                     escrow_monthly=m.escrow_monthly if not self.stepped else None,
                     rate_compounding=m.rate_compounding,
-                    prepayment_privilege=privilege,
                     renewal_state=None if renewal_state is None else s.MortgageRenewalState(**asdict(renewal_state)),
                     rental_eligible_principal=(
                         None if m.rental_eligible_principal is None else float(m.rental_eligible_principal)
                     ),
+                    prepayment_privilege=privilege,
                     **terms,
                 )
             e = home.expenses
@@ -1344,6 +1356,9 @@ class _Extractor:
                     elimination_months=policy.elimination_months,
                     benefit_end_age=policy.benefit_end_age,
                     benefits_taxable=policy.benefits_taxable,
+                    benefit_growth_pct=policy.benefit_growth_pct,
+                    lifetime_benefit_max=policy.lifetime_benefit_max,
+                    waive_premium_in_claim=policy.waive_premium_in_claim,
                     marketplace=s.Marketplace(
                         slcsp_monthly=policy.marketplace.slcsp_monthly,
                         advance_monthly=policy.marketplace.advance_monthly,
@@ -1392,6 +1407,7 @@ class _Extractor:
             medical_costs_annual=override,
             medicare=bool(person.medicare),
             long_term_care=bool(person.long_term_care),
+            medicaid=any(care.medicaid for care in person.long_term_care),
         )
         active = flags.medical_costs or flags.medicare or flags.long_term_care or override is not None
         return flags if active else None
@@ -1444,8 +1460,8 @@ class _Extractor:
 
         Before the first step they are returned as written. Afterwards an event is re-timed to its
         remaining dates (and ``until`` for a recurring expense), because its anchors or earlier years
-        may already have fired. Keep a dated relative event tied to its anchor if both are pending
-        on the same day, so they still fire in that order.
+        may already have fired. Keep a relative event tied to its anchor if both are first pending on
+        the same date (year, month and day, dated or not), so they still fire in that order.
         """
         from ..lifeevents import LifeEvents
 
@@ -1475,14 +1491,14 @@ class _Extractor:
                 continue
             at = s.At(year=first_year, month=first_month, day=first_day)
             relative = source.at.relative
-            if first_day is not None and relative is not None:
+            if relative is not None:
                 anchor = by_spec_id.get(relative.after)
                 if anchor is not None and first_pending[id(anchor)] == (first_year, first_month, first_day):
                     at = source.at
             update: dict[str, Any] = {"at": at}
             if isinstance(source, s.RecurringExpenseEvent):
                 update["until"] = s.At(year=max(when[0] for when in dates[id(source)]))
-            if isinstance(source, s.MortgageMaturityEvent):
+            if isinstance(source, s.MortgageMaturityEvent | s.MortgagePrepaymentEvent):
                 owner = next((p for p in self.people() if any(self.item_id(h) == source.home for h in p.homes)), None)
                 if owner is not None:
                     update["person"] = self.pid(owner)
@@ -1493,10 +1509,16 @@ class _Extractor:
         from ..debt.bridge import DatedBridgeLine
 
         lines = {self.item_id(line): line for line in self.model.agents if isinstance(line, DatedBridgeLine)}
+        skipped = getattr(getattr(self.model, "household", None), "skipped_homes", set())
         events: list[s.Event] = []
         for source in self.pending_sources():
             if isinstance(source, s.Marriage):
                 continue
+            # A home whose purchase was skipped (the buyer had died) never exists: drop later events on it.
+            if _home_target(source) in skipped:
+                continue
+            if isinstance(source, s.MoveEvent) and source.sell_home in skipped:
+                source = source.model_copy(update={"sell_home": None})
             if isinstance(source, s.BridgeEvent) and (line := lines.get(source.bridge)) is not None:
                 if (line.home is not None and line.home.sold) or line.person.is_deceased:
                     continue
@@ -1518,6 +1540,17 @@ class _Extractor:
             events.append(source)
         events += [record["event"] for record in self.build_time]
         return _sorted(events)
+
+
+def _home_target(event) -> str | None:
+    """The home id an event acts on (a refinance's ``debt`` when it names a home), else None."""
+    if isinstance(
+        event, s.SellHomeEvent | s.MortgageRenewalEvent | s.MortgageMaturityEvent | s.MortgagePrepaymentEvent
+    ):
+        return event.home
+    if isinstance(event, s.RefinanceEvent):
+        return event.debt
+    return None
 
 
 _DEFAULT_FIXED_NAMES = {"cd": "CD", "treasury": "Treasury", "i_bond": "I bond", "bond_fund": "Bond fund"}

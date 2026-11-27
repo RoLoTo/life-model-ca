@@ -7,6 +7,7 @@ import math
 import warnings
 from calendar import monthrange
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date
 from typing import TYPE_CHECKING
@@ -92,6 +93,49 @@ def validate_withdrawal_order(order: "tuple[str, ...] | list[str] | None") -> tu
     return order
 
 
+#: Non-bank waterfall sources that accept a per-source balance floor.
+#: ``"roth"`` covers both ``"roth_basis"`` and ``"roth_earnings"`` against the combined Roth balance.
+WITHDRAWAL_FLOOR_SOURCES: tuple[str, ...] = ("fixed_income", "brokerage", "pretax", "roth", "reserve")
+
+
+def _floor_key(source: str) -> str:
+    return "roth" if source in ("roth_basis", "roth_earnings") else source
+
+
+def validate_withdrawal_floors(floors: Mapping[str, float] | None) -> dict[str, float]:
+    """Return ``floors`` as a normalized ``{source: floor}`` mapping, or ``{}`` when None.
+
+    Keys must name non-bank sources in :data:`WITHDRAWAL_FLOOR_SOURCES`; values must be finite
+    and non-negative. Zero floors are omitted.
+    """
+    if floors is None:
+        return {}
+    if not isinstance(floors, Mapping):
+        raise TypeError(f"withdrawal_floors must be a mapping of source names to dollar floors; got {floors!r}")
+    normalized: dict[str, float] = {}
+    for source, raw in floors.items():
+        if source == "bank":
+            raise ValueError(
+                "withdrawal_floors applies to non-bank waterfall sources "
+                f"{WITHDRAWAL_FLOOR_SOURCES}; use a reserve bank account or SavingsPolicy.cash_floor for cash"
+            )
+        if source in ("roth_basis", "roth_earnings"):
+            raise ValueError(
+                f"Use 'roth' in withdrawal_floors instead of {source!r} "
+                "(it covers both 'roth_basis' and 'roth_earnings' against the combined Roth balance)"
+            )
+        if source not in WITHDRAWAL_FLOOR_SOURCES:
+            raise ValueError(f"Unknown withdrawal floor source {source!r}; expected one of {WITHDRAWAL_FLOOR_SOURCES}")
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise TypeError(f"withdrawal_floors[{source!r}] must be a finite non-negative number; got {raw!r}")
+        amount = float(raw)
+        if not math.isfinite(amount) or amount < 0:
+            raise ValueError(f"withdrawal_floors[{source!r}] must be a finite non-negative number; got {raw!r}")
+        if amount > 0:
+            normalized[source] = amount
+    return {source: normalized[source] for source in sorted(normalized)}
+
+
 class TaxUnit:
     """A tax-filing unit: a single person, or a married couple filing jointly.
 
@@ -123,7 +167,14 @@ class TaxUnit:
     A head who moves during the year files part-year returns (see :meth:`state_income_tax_due`).
     """
 
-    def __init__(self, members: list["Person"], *, withdrawal_order: "tuple[str, ...] | None" = None):
+    def __init__(
+        self,
+        members: list["Person"],
+        *,
+        withdrawal_order: "tuple[str, ...] | None" = None,
+        withdrawal_floors: "Mapping[str, float] | None" = None,
+        floor_members: "list[Person] | tuple[Person, ...] | None" = None,
+    ):
         if not members:
             raise ValueError("TaxUnit requires at least one member")
         self.members = members
@@ -131,6 +182,9 @@ class TaxUnit:
         if "tax_free" not in self.withdrawal_order and any(member.tfsas for member in members):
             index = self.withdrawal_order.index("pretax")
             self.withdrawal_order = (*self.withdrawal_order[:index], "tax_free", *self.withdrawal_order[index:])
+        self.withdrawal_floors = validate_withdrawal_floors(withdrawal_floors)
+        self._floor_members = None if floor_members is None else tuple(floor_members)
+        self._allocated_floors: dict[str, float] | None = None
         self.filing_status = members[0].filing_status
         # The year's tax parameters (brackets, deductions, wage base) for this settlement.
         self.config = members[0].model.year_config
@@ -174,6 +228,8 @@ class TaxUnit:
         units: list[TaxUnit] = []
         seen = set()
         order = getattr(family, "withdrawal_order", None)
+        floors = getattr(family, "withdrawal_floors", None)
+        household_members = family.members
         for member in family.members:
             if member.unique_id in seen:
                 continue
@@ -183,11 +239,23 @@ class TaxUnit:
                 and spouse is not None
                 and spouse in family.members
             ):
-                units.append(cls([member, spouse], withdrawal_order=order))
+                units.append(
+                    cls(
+                        [member, spouse],
+                        withdrawal_order=order,
+                        withdrawal_floors=floors,
+                        floor_members=household_members,
+                    )
+                )
                 seen.add(member.unique_id)
                 seen.add(spouse.unique_id)
             else:
-                unit = cls([member], withdrawal_order=order)
+                unit = cls(
+                    [member],
+                    withdrawal_order=order,
+                    withdrawal_floors=floors,
+                    floor_members=household_members,
+                )
                 if member.filing_status == FilingStatus.SINGLE:
                     status = cls._unmarried_status(member)
                     if status is not None:
@@ -230,7 +298,12 @@ class TaxUnit:
             for unit in cls.build_units(family):
                 if person in unit.members:
                     return unit
-        return cls([person], withdrawal_order=getattr(family, "withdrawal_order", None))
+        return cls(
+            [person],
+            withdrawal_order=getattr(family, "withdrawal_order", None),
+            withdrawal_floors=getattr(family, "withdrawal_floors", None),
+            floor_members=None if family is None else family.members,
+        )
 
     @property
     def living_members(self) -> "list[Person]":
@@ -689,12 +762,12 @@ class TaxUnit:
         cause = cause or sink or "bill payment"
         post = {"kind": kind, "cause": cause, "sink": sink, "to_account": to_account}
         with self.members[0].model.ledger.caused_by(f"raise cash for {cause}"):
-            remaining = self._pay_from_banks(amount, **post)
+            remaining = self.pay_from_banks(amount, **post)
             for source in self.withdrawal_order[1:]:
                 if remaining <= 0:
                     break
                 self._raise_cash(source, remaining, dividend_on=dividend_on, reference=cause)
-                remaining = self._pay_from_banks(remaining, **post)
+                remaining = self.pay_from_banks(remaining, **post)
         return max(0.0, remaining)
 
     def _bank_accounts_in_draw_order(self) -> list:
@@ -718,7 +791,7 @@ class TaxUnit:
             return sorted(self.members, key=lambda m: (m.early_withdrawal_penalty(100.0), m.name, m.age))
         return sorted(self.members, key=lambda m: (m.name, m.age))
 
-    def _pay_from_banks(
+    def pay_from_banks(
         self, amount: float, *, kind=None, sink=None, to_account=None, cause=None, paid_from=None
     ) -> float:
         """Pay ``amount`` from the unit's bank accounts in :meth:`_bank_accounts_in_draw_order`.
@@ -744,11 +817,43 @@ class TaxUnit:
         return amount
 
     def _payer_account(self):
-        """The fallback cash account for unfunded amounts and lump-sum annual bills."""
+        """The fallback cash account for unfunded amounts and single-account settlements."""
         accounts = self._bank_accounts_in_draw_order()
         if accounts:
             return accounts[0]
         return self.members[0].cash_destination
+
+    @classmethod
+    def allocate_floor_budgets(cls, units: "list[TaxUnit]") -> None:
+        """Partition each household withdrawal floor across ``units`` in proportion to each unit's
+        balance in that source so settlement order does not change which unit gets the spare."""
+        if len(units) <= 1 or not units[0].withdrawal_floors:
+            return
+        floors = units[0].withdrawal_floors
+        allocated: list[dict[str, float]] = [{} for _ in units]
+        for source, floor in floors.items():
+            balances = [math.fsum(cls._source_balance(m, source) for m in unit.members) for unit in units]
+            total = math.fsum(balances)
+            for unit_floors, unit_balance in zip(allocated, balances, strict=True):
+                unit_floors[source] = unit_balance if total <= floor else floor * (unit_balance / total)
+        for unit, unit_floors in zip(units, allocated, strict=True):
+            unit._allocated_floors = unit_floors
+
+    def _available_for(self, source: str) -> float | None:
+        """Maximum the waterfall may draw from ``source`` above its floor, or None when uncapped."""
+        key = _floor_key(source)
+        if self._allocated_floors is not None:
+            floor = self._allocated_floors.get(key)
+            if floor is None:
+                return None
+            spare = math.fsum(self._source_balance(member, source) for member in self.members) - floor
+            return 0.0 if spare < 0.005 else spare
+        floor = self.withdrawal_floors.get(key, 0.0)
+        if floor <= 0:
+            return None
+        members = self._floor_members if self._floor_members is not None else self.members
+        spare = math.fsum(self._source_balance(member, source) for member in members) - floor
+        return 0.0 if spare < 0.005 else spare
 
     def _raise_cash(
         self,
@@ -762,15 +867,18 @@ class TaxUnit:
         """Move up to ``amount`` from ``source`` (a non-bank waterfall step) into members' banks,
         posting whatever the draw makes taxable. Unsized: the caller accounts for any tax. Returns
         the amount raised."""
+        # The most the step may take out of the source: the household floor's spare, each member's
+        # own floor (ending targets), and ``max_gross`` for gross registered draws, whichever is least.
+        cap = self._available_for(source)
         floor = sum(member.withdrawal_floors.get(source, 0.0) for member in self.members)
-        gross_cap: float | None = max_gross
         if floor:
             spare = max(0.0, self._source_total(source, dividend_on) - floor)
-            gross_cap = spare if gross_cap is None else min(gross_cap, spare)
-        if gross_cap is not None:
-            gross_cap = max(0.0, gross_cap)
-            amount = min(amount, gross_cap)
-            if amount <= 0:
+            cap = spare if cap is None else min(cap, spare)
+        if max_gross is not None:
+            cap = max(0.0, max_gross) if cap is None else min(cap, max(0.0, max_gross))
+        if cap is not None:
+            amount = min(amount, cap)
+            if amount < 0.005:
                 return 0.0
         if source == "corporate_dividend":
             if dividend_on is None:
@@ -780,19 +888,19 @@ class TaxUnit:
             return fund_shortfall_with_dividends(self.members, dividend_on, amount, reference)
         before = self._source_balances(source)
         raised = 0.0
-        remaining_gross = gross_cap
+        remaining_reduction = cap
         for member in self._members_for(source):
-            if raised >= amount or (remaining_gross is not None and remaining_gross <= 0):
+            if raised >= amount or (remaining_reduction is not None and remaining_reduction < 0.005):
                 break
             want = amount - raised
             if source == "brokerage":
                 raised += member.withdraw_from_brokerage_accounts(want)
             elif source == "pretax":
                 member_before = self._source_balance(member, "pretax")
-                raised += member.withdraw_from_pretax_accounts(want, max_gross=remaining_gross)
-                if remaining_gross is not None:
+                raised += member.withdraw_from_pretax_accounts(want, max_gross=remaining_reduction)
+                if remaining_reduction is not None:
                     drawn_gross = member_before - self._source_balance(member, "pretax")
-                    remaining_gross = max(0.0, remaining_gross - drawn_gross)
+                    remaining_reduction = max(0.0, remaining_reduction - drawn_gross)
             elif source == "tax_free":
                 raised += member.withdraw_from_tax_free_accounts(want)
             elif source == "roth_basis":
@@ -804,9 +912,19 @@ class TaxUnit:
                     got += member.withdraw_tax_free_from_roth_iras(want - got)
                 raised += got
             elif source == "fixed_income":
-                raised += member.redeem_fixed_income(want, reserve=False)
+                member_before = self._source_balance(member, source)
+                raised += member.redeem_fixed_income(want, reserve=False, max_reduction=remaining_reduction)
+                if remaining_reduction is not None:
+                    remaining_reduction = max(
+                        0.0, remaining_reduction - (member_before - self._source_balance(member, source))
+                    )
             elif source == "reserve":
-                raised += member.draw_reserves(want)
+                member_before = self._source_balance(member, source)
+                raised += member.draw_reserves(want, max_reduction=remaining_reduction)
+                if remaining_reduction is not None:
+                    remaining_reduction = max(
+                        0.0, remaining_reduction - (member_before - self._source_balance(member, source))
+                    )
             else:  # pragma: no cover - validated in __init__
                 raise ValueError(f"Unknown withdrawal source {source!r}")
         self._log_draws(source, before)
@@ -903,11 +1021,13 @@ class TaxUnit:
                 netted = True
             elif source == "pretax":
                 # Size and perform any pre-tax withdrawal against the tax and penalty it triggers.
-                gross = self._size_gross_withdrawal(bills)
-                if gross > 0:
-                    before = self._source_balances("pretax")
-                    self.withdraw_from_pretax_accounts(gross)
-                    self._log_draws("pretax", before, target=gross)
+                available = self._available_for("pretax")
+                if available is None or available > 0:
+                    gross = self._size_gross_withdrawal(bills, max_withdrawal=available)
+                    if gross > 0:
+                        before = self._source_balances("pretax")
+                        self.withdraw_from_pretax_accounts(gross)
+                        self._log_draws("pretax", before, target=gross)
             else:
                 # Unsized steps move the remaining gap; a draw that is itself taxable (a fund sale, an I
                 # bond's deferred interest, non-qualified Roth 401(k) earnings) raises the tax, so repeat
@@ -1018,7 +1138,8 @@ class TaxUnit:
         previews that netting (:meth:`_taxes_with_sale`); settled taxes are always computed from
         the real post-sale ledger.
         """
-        available = self.brokerage_balance
+        spare = self._available_for("brokerage")
+        available = self.brokerage_balance if spare is None else min(spare, self.brokerage_balance)
         if available <= 0:
             return
         bank = self.bank_account_balance
@@ -1259,12 +1380,12 @@ class TaxUnit:
             self._draw_hsa_for_medical(bills)
             paid_from = {}
             with model.ledger.caused_by(f"pay {when} bills"):
-                remaining = self._pay_from_banks(bills, paid_from=paid_from)
+                remaining = self.pay_from_banks(bills, paid_from=paid_from)
                 for source in self.withdrawal_order[1:]:
                     if remaining < 0.005:
                         break
                     self._raise_cash(source, remaining, dividend_on=month_end, reference="monthly-bills")
-                    remaining = self._pay_from_banks(remaining, paid_from=paid_from)
+                    remaining = self.pay_from_banks(remaining, paid_from=paid_from)
             shortfall = round_money(max(0.0, remaining))
             payer = self._payer_account()
             # With one funding account, each bill stays one entry.
@@ -1292,12 +1413,12 @@ class TaxUnit:
         if housing > 0:
             paid_from = {}
             with model.ledger.caused_by(f"pay {on.isoformat()} housing"):
-                remaining = self._pay_from_banks(housing, paid_from=paid_from)
+                remaining = self.pay_from_banks(housing, paid_from=paid_from)
                 for source in self.withdrawal_order[1:]:
                     if remaining < 0.005:
                         break
                     self._raise_cash(source, remaining, dividend_on=on, reference="monthly-bills")
-                    remaining = self._pay_from_banks(remaining, paid_from=paid_from)
+                    remaining = self.pay_from_banks(remaining, paid_from=paid_from)
             shortfall = round_money(max(0.0, remaining))
             payer = self._payer_account()
             funding = deque(paid_from.items()) if any(account is not payer for account in paid_from) else None
@@ -1526,9 +1647,8 @@ class TaxUnit:
 
         The household waterfall (all banks, fixed income, all brokerage, Roth basis under 59.5, pre-tax,
         remaining Roth, emergency reserves) moves into the banks only what the taxes still need, each
-        taxable step sized against the tax it triggers. The taxes are posted to the ledger by line
-        (``_BillLine``) from the household's payer account (:meth:`_payer_account`); a shortfall
-        becomes debt.
+        taxable step sized against the tax it triggers. Tax postings use the accounts that funded them,
+        falling back to :meth:`_payer_account` for unfunded amounts; a shortfall becomes debt.
         """
         model = self.members[0].model
         settle = getattr(getattr(model, "income_tax_policy", None), "settle_year", None)
@@ -1580,18 +1700,25 @@ class TaxUnit:
         # (which would create negative debt).
         payer = self._payer_account()
         net_due = bills + taxes.total
+        paid_from: dict = {}
         if net_due >= 0:
-            shortfall = round_money(max(0.0, self._pay_from_banks(net_due)))
+            shortfall = round_money(max(0.0, self.pay_from_banks(net_due, paid_from=paid_from)))
+            post_payer = payer
+            # With one funding account, each tax line stays one entry.
+            funding = deque(paid_from.items()) if any(account is not payer for account in paid_from) else None
         else:
             # The refund lands in the highest-yield bank (or the head's cash pocket without one).
             accounts = self._bank_accounts_in_draw_order()
             if accounts:
-                accounts[-1].balance += -net_due
+                post_payer = accounts[-1]
+                post_payer.balance += -net_due
             else:
+                post_payer = payer
                 self.members[0].receive_cash(-net_due, source="refundable tax credits", post=False)
             shortfall = 0.0
+            funding = None
         for line in bill_lines:
-            line.post(model.ledger, payer)
+            line.post(model.ledger, post_payer, funding=funding)
         self.members[0].add_debt(shortfall, to_account=payer, cause=f"unpaid {year} taxes")
 
         self._record_stats(taxes, tax_return)
@@ -1833,7 +1960,7 @@ class TaxUnit:
             )
         return lines
 
-    def _size_gross_withdrawal(self, bills: float) -> float:
+    def _size_gross_withdrawal(self, bills: float, *, max_withdrawal: float | None = None) -> float:
         """Pure fixed-point solve for the pre-tax withdrawal needed to cover bills + taxes.
 
         Penalties scale linearly with the draw (10% below 59.5), so the map stays a contraction as
@@ -1846,6 +1973,8 @@ class TaxUnit:
         for _ in range(100):
             taxes = self.get_income_taxes_due(self._prospective_taxable(gross)).total
             needed = max(0.0, bills + taxes - bank)
+            if max_withdrawal is not None:
+                needed = min(needed, max_withdrawal)
             if abs(needed - gross) < 0.001:
                 return needed
             gross = needed
@@ -2020,8 +2149,9 @@ class _BillLine:
                 funding.popleft()
             else:
                 funding[0] = (account, available - paid)
-        if remaining >= 0.005:
-            # The unfunded portion uses the account paired with the new debt.
+        if remaining > 0:
+            # The unfunded portion uses the account paired with the new debt. Splits fold roundoff
+            # above, so this is a real amount: a shortfall, or a line arriving after funding ran out.
             self._post_cash(ledger, payer, remaining)
 
     def _post_cash(self, ledger, account, amount: float) -> None:
@@ -2044,8 +2174,9 @@ def _loan_lines(
     (an income-driven plan's match, forgiveness)."""
     name = name or getattr(loan, "name", None) or getattr(loan, "school_name", None) or type(loan).__name__
     principal_paid = paid - interest
+    interest_sink = getattr(loan, "interest_sink", f"interest: {name}")
     lines = [
-        _BillLine(interest, kind, member, f"interest: {name}", sink=f"interest: {name}"),
+        _BillLine(interest, kind, member, f"interest: {name}", sink=interest_sink),
         _BillLine(principal_paid, kind, member, f"principal: {name}", to_account=loan),
     ]
     unexplained = after - (before - principal_paid)

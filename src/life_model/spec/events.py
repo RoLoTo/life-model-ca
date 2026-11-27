@@ -51,6 +51,21 @@ if TYPE_CHECKING:
 
 #: Event actions applied at build time (constructor inputs) rather than as LifeEvent callables.
 BUILD_TIME_ACTIONS = ("claim_social_security", "die")
+#: Actions compiled to a stage other than ``events`` (a prepayment waits for the month's bills).
+ACTION_STAGES = {"prepay_mortgage": "post_step"}
+
+
+def scheduled_date(event: s.EventBase, *, day_required: bool = True) -> date:
+    """The calendar date of an event dated with an explicit year and month (day 1 when the day is optional).
+
+    The validator guarantees these dates for the actions that call this; a ValueError reports a spec
+    that bypassed it.
+    """
+    at = event.at
+    if at.year is None or at.month is None or (day_required and at.day is None):
+        needed = "a full calendar date" if day_required else "an explicit year and month"
+        raise ValueError(f"'{event.action}' needs {needed}, got {at!r}")
+    return date(at.year, at.month, at.day or 1)
 
 
 class EventTiming:
@@ -193,7 +208,7 @@ def compile_events(builder: "_Builder", timing: EventTiming) -> list[LifeEvent]:
             effective_day = life_event.day
             if effective_day is None and explicit_month in (None, month):
                 effective_day = day
-            life_event._set_date(explicit_month or month, effective_day)
+            life_event.set_date(explicit_month or month, effective_day)
             priority = getattr(life_event, "same_day_priority", 0)
             compiled.append(
                 (
@@ -397,7 +412,7 @@ def _compile_one(builder: "_Builder", timing: EventTiming, event, year: int) -> 
 
     if action == "prepay_mortgage":
         name = _name(event, f"{person.name} prepays the mortgage")
-        return [_life_event(year, name, event, _prepay_mortgage, builder, person, event, stage="post_step")]
+        return [_life_event(year, name, event, _prepay_mortgage, builder, person, event, stage=ACTION_STAGES[action])]
 
     if action == "heloc_draw":
         name = _name(event, f"{person.name} draws ${event.amount:,.0f} on a home equity line")
@@ -496,10 +511,11 @@ def _buy_home_event(builder: "_Builder", person, event: s.BuyHomeEvent) -> None:
             on=on,
             jurisdiction=funding.land_transfer_tax,
         )
-        funding = funding.model_copy(update={"closing_costs": funding.closing_costs + transfer_tax})
+        costs = Decimal(str(funding.closing_costs)) + transfer_tax
+        funding = funding.model_copy(update={"closing_costs": float(costs)})
     try:
         agent = _buy_home(builder, person, event.home, funding)
-        if event.at.day is not None:
+        if agent is not None and event.at.day is not None:
             agent._appreciation_anchor = date(builder.model.year, builder.model.month, event.at.day)
     except ClosingShortfall as error:
         error.closing_on = date(builder.model.year, builder.model.month, event.at.day or 1)
@@ -508,8 +524,21 @@ def _buy_home_event(builder: "_Builder", person, event: s.BuyHomeEvent) -> None:
 
 
 def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCashFunding | None = None) -> None:
+    """Buy ``home``. With ``cash_funding`` the down payment is sized from bank cash; when the bank can't
+    cover the terms, a ``closing_shortfall`` event records the gap and the purchase closes on the
+    required down payment through the household waterfall, like a purchase without ``cash_funding``.
+    A purchase dated after the buyer's death is skipped, and so are later events on that home."""
+    if person.is_deceased:
+        builder.model.event_log.add(
+            Event(f"home purchase skipped: {person.name} died before closing on {home.id or home.name or 'a home'}")
+        )
+        if home.id is not None:
+            builder.built.skipped_homes.add(home.id)
+        return
+    cash_only = cash_funding is not None
     if cash_funding is not None:
-        from ..housing.closing import cash_funded_down_payment
+        from ..housing.closing import ClosingShortfall, cash_funded_down_payment
+        from ..model import EventKind
 
         tax_holdback = Decimal(0)
         if cash_funding.reserve_ontario_tax:
@@ -517,17 +546,33 @@ def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCas
 
             tax_holdback = cash_reserve_for_owner(person)
         price = Decimal(str(home.purchase_price))
-        down = cash_funded_down_payment(
-            person,
-            price=price,
-            closing_costs=cash_funding.closing_costs,
-            cash_to_keep=cash_funding.cash_to_keep,
-            minimum_down_payment=cash_funding.minimum_down_payment,
-            mortgage_limit=cash_funding.mortgage_limit,
-            down_payment_fraction=cash_funding.down_payment_fraction,
-            extra_down_payment=cash_funding.extra_down_payment,
-            tax_holdback=tax_holdback,
-        )
+        try:
+            down = cash_funded_down_payment(
+                person,
+                price=price,
+                closing_costs=cash_funding.closing_costs,
+                cash_floor=cash_funding.cash_floor,
+                minimum_down_payment=cash_funding.minimum_down_payment,
+                mortgage_limit=cash_funding.mortgage_limit,
+                down_payment_fraction=cash_funding.down_payment_fraction,
+                extra_down_payment=cash_funding.extra_down_payment,
+                tax_holdback=tax_holdback,
+            )
+        except ClosingShortfall as gap:
+            # Ontario forecasts treat unfunded closing terms as an infeasible plan.
+            if gap.required is None or builder.spec.meta.ontario_retirement_tax is not None:
+                raise
+            builder.model.event_log.add(
+                Event(
+                    EventKind.CLOSING_SHORTFALL,
+                    person=person,
+                    amount=float(gap.amount),
+                    cause=f"purchase of {home.name or home.id or 'home'}",
+                    required=float(gap.required),
+                    available=float(gap.available or 0),
+                )
+            )
+            down, cash_only = gap.required, False
         principal = price - down
         mortgage = (
             s.Mortgage(
@@ -544,19 +589,29 @@ def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCas
             update={
                 "down_payment": float(down),
                 "mortgage": mortgage,
-                "closing_cost_pct": float(100 * cash_funding.closing_costs / price),
+                "closing_cost_pct": float(100 * Decimal(str(cash_funding.closing_costs)) / price),
             }
         )
-    agent = builder.build_home(person, home, purchase=True, cash_only=cash_funding is not None)
+    agent = builder.build_home(person, home, purchase=True, cash_only=cash_only)
     if home.id is not None:
         builder.built.items[home.id] = agent
         agent.spec_id = home.id
     return agent
 
 
+def _never_bought(builder: "_Builder", home_id: str | None, action: str) -> bool:
+    """Whether ``home_id`` names a home whose purchase was skipped; logs the skipped ``action``."""
+    if home_id is None or home_id not in builder.built.skipped_homes:
+        return False
+    builder.model.event_log.add(Event(f"{action} skipped: {home_id} was never bought"))
+    return True
+
+
 def _record_home_valuation(builder: "_Builder", person, event: s.HomeValuationEvent) -> None:
     from ..housing.home import Home
 
+    if _never_bought(builder, event.home, "home valuation"):
+        return
     home = builder.built.items.get(event.home)
     if not isinstance(home, Home) or home.person is not person:
         raise ValueError("A valuation requires a home owned by the person reporting the value")
@@ -566,6 +621,9 @@ def _record_home_valuation(builder: "_Builder", person, event: s.HomeValuationEv
 def _convert_ontario_rental(builder: "_Builder", person, event: s.ConvertHomeToOntarioRentalEvent) -> None:
     from ..canada.rental_property import OntarioRental, convert_to_rental
     from ..housing.home import Home
+
+    if _never_bought(builder, event.home, "Ontario rental conversion"):
+        return
 
     home = builder.built.items.get(event.home)
     if not isinstance(home, Home) or home.person is not person:
@@ -588,6 +646,8 @@ def _sell_home(
     selling_cost_fixed: Decimal = Decimal(0),
     canadian_rental_sale: bool = False,
 ) -> None:
+    if _never_bought(builder, home_id, "home sale"):
+        return
     when = date(builder.model.year, builder.model.month, day or 1)
     builder.built.items[home_id].sell(
         selling_cost_pct,
@@ -618,25 +678,78 @@ def _add_account(builder: "_Builder", event: s.AddAccountEvent) -> None:
 
 
 def _reserve_cash(builder: "_Builder", person, event: s.ReserveCashEvent, name: str) -> None:
+    """Earmark up to the requested amount from the funding bank.
+
+    After the person's death the bank's current owner (the surviving spouse) funds the earmark; a
+    bank nobody alive owns skips it. The amount is capped at the bank's balance and at the owner's
+    spendable cash after the year's unpaid tax, so an optional earmark never leaves that tax to
+    forced sales. With the Ontario return policy the earmark is required instead: ``pool_cash`` tops
+    the funding bank up from the owner's other banks, and a bank that still lacks the full amount
+    reports an infeasible funding plan.
+    """
+    from decimal import ROUND_DOWN
+
     from ..account.bank import BankAccount
     from ..account.cash_reserve import CashReserve
+    from ..model import EventKind, snap_money
+    from ..policies import available_cash_after_tax
 
     bank = builder.built.items.get(event.bank)
-    if not isinstance(bank, BankAccount) or bank.owner is not person:
-        raise ValueError(f"Funding bank {event.bank!r} must be open and owned by {person.name}")
+    owner = getattr(bank, "owner", None)
+    if (
+        not isinstance(bank, BankAccount)
+        or owner is None
+        or owner.is_deceased
+        or (owner is not person and not person.is_deceased)
+    ):
+        builder.model.event_log.add(Event(f"cash reserve skipped: {event.bank} has no living owner"))
+        return
+    year, month, day = event.at.year, event.at.month, event.at.day
+    if year is None or month is None or day is None:
+        raise ValueError("reserve_cash needs an explicit calendar day")
+    funded_on = date(year, month, day)
+    required = builder.spec.meta.ontario_retirement_tax is not None
+    after_tax = available_cash_after_tax(owner)
     if event.pool_cash:
-        from ..account.bank import fund_from_owned_banks
+        from ..account.bank import BankFundingShortfall, fund_from_owned_banks
 
-        when = date(builder.model.year, builder.model.month, event.at.day or 1)
-        fund_from_owned_banks(bank, Decimal(str(event.amount)), on=when)
+        wanted = event.amount if required else min(event.amount, after_tax)
+        try:
+            fund_from_owned_banks(
+                bank, Decimal(str(wanted)).quantize(Decimal("0.01"), rounding=ROUND_DOWN), on=funded_on
+            )
+        except BankFundingShortfall:
+            if required:
+                raise
+    available = snap_money(max(0.0, min(bank.balance, after_tax)))
+    if required:
+        if bank.balance < event.amount:
+            raise ValueError("The funding bank has insufficient cash for the reserve")
+        amount = event.amount
+    else:
+        amount = float(Decimal(str(min(event.amount, available))).quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+    details = {
+        "date": funded_on.isoformat(),
+        "requested": event.amount,
+        "available": available,
+        "tax_holdback": snap_money(max(0.0, owner.usable_bank_balance - after_tax)),
+        "release_on": event.release_on.isoformat(),
+    }
+    if amount <= 0:
+        builder.model.event_log.add(Event(EventKind.CASH_RESERVED, person=owner, amount=0.0, cause=name, **details))
+        return
     reserve = CashReserve(
-        person,
+        owner,
         name=name,
-        amount=event.amount,
+        amount=amount,
         bank=bank,
         schedule=builder.event_schedule(),
         release_on=event.release_on,
         interest_pct=event.interest_pct,
+        funded_on=funded_on,
+    )
+    builder.model.event_log.add(
+        Event(EventKind.CASH_RESERVED, person=owner, amount=amount, account=reserve, cause=name, **details)
     )
     if event.id is not None:
         builder.built.items[event.id] = reserve
@@ -1158,6 +1271,8 @@ def _change_contribution(builder: "_Builder", person, event: s.ChangeContributio
 def _refinance(builder: "_Builder", event: s.RefinanceEvent) -> None:
     from ..housing.home import Home
 
+    if _never_bought(builder, event.debt, "refinance"):
+        return
     target = builder.built.items[event.debt]
     loan = target.mortgage if isinstance(target, Home) else target
     if loan is None or loan.principal <= 0:
@@ -1172,24 +1287,26 @@ def _refinance(builder: "_Builder", event: s.RefinanceEvent) -> None:
     }
     if isinstance(target, Home):
         kwargs["cash_out_for_improvements"] = event.cash_out_for_improvements
+        kwargs["rate_compounding"] = event.rate_compounding
     loan.refinance(event.rate_pct, **kwargs)
 
 
 def _renew_mortgage(builder: "_Builder", event: s.MortgageRenewalEvent) -> None:
-    from datetime import date
-
+    if _never_bought(builder, event.home, "mortgage renewal"):
+        return
     home = builder.built.items.get(event.home)
     if home is None:
         raise ValueError(f"Home {event.home!r} must exist before its mortgage can be renewed")
     if home.sold or home.mortgage is None or home.mortgage.principal <= 0:
         builder.model.event_log.add(Event(f"mortgage renewal skipped: {event.home} has no outstanding mortgage"))
         return
+    from .builder import prepayment_privilege
+
     assert event.at.year is not None and event.at.month is not None
-    when = date(event.at.year, event.at.month, 1)
     if builder.spec.meta.ontario_retirement_tax is not None:
         from ..canada.funding import require_mortgage_renewal
 
-        require_mortgage_renewal(home.mortgage, when, event)
+        require_mortgage_renewal(home.mortgage, date(event.at.year, event.at.month, 1), event)
     new_terms = event.prepayment_privilege
     remaining_after_paydown = (
         event.target_principal
@@ -1197,7 +1314,9 @@ def _renew_mortgage(builder: "_Builder", event: s.MortgageRenewalEvent) -> None:
         else max(0.0, home.mortgage.principal - event.principal_paydown)
     )
     privilege = (
-        new_terms.resolve(when, remaining_after_paydown)
+        prepayment_privilege(
+            new_terms, as_of=scheduled_date(event, day_required=False), default_basis=remaining_after_paydown
+        )
         if isinstance(new_terms, s.MortgagePrepaymentPrivilege) and remaining_after_paydown > 0
         else new_terms
     )
@@ -1213,16 +1332,13 @@ def _renew_mortgage(builder: "_Builder", event: s.MortgageRenewalEvent) -> None:
 
 
 def _pay_mortgage_at_maturity(builder: "_Builder", event: s.MortgageMaturityEvent) -> None:
-    from datetime import date
-
     from ..housing.home import Home
 
     home = builder.built.items.get(event.home)
     if not isinstance(home, Home) or home.sold or home.person.is_deceased or home.mortgage is None:
         builder.model.event_log.add(Event(f"mortgage payoff skipped: {event.home} has no active homeowner mortgage"))
         return
-    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
-    when = date(event.at.year, event.at.month, event.at.day)
+    when = scheduled_date(event)
     bridge = _owned_bridge(builder, home.person, event.bridge) if event.bridge is not None else None
     replace_with = _owned_bridge(builder, home.person, event.replace_with) if event.replace_with is not None else None
     if builder.spec.meta.ontario_retirement_tax is not None:
@@ -1242,26 +1358,38 @@ def _pay_mortgage_at_maturity(builder: "_Builder", event: s.MortgageMaturityEven
 
 
 def _prepay_mortgage(builder: "_Builder", person, event: s.MortgagePrepaymentEvent) -> None:
-    from datetime import date
-
+    """Prepay from the home's current living owner (the surviving spouse after the borrower's death),
+    with that owner's cash and tax holdback; a sold home, a paid-off mortgage or a home nobody alive
+    owns skips the prepayment."""
     from ..housing.home import Home
 
-    home = builder.built.items.get(event.home)
-    if not isinstance(home, Home) or home.person is not person:
-        raise ValueError("A mortgage prepayment requires a home owned by the borrower")
-    if home.sold or home.mortgage is None or home.mortgage.principal <= 0:
+    if _never_bought(builder, event.home, "mortgage prepayment"):
         return
-    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
-    when = date(event.at.year, event.at.month, event.at.day)
+    home = builder.built.items.get(event.home)
+    if (
+        not isinstance(home, Home)
+        or home.sold
+        or home.person.is_deceased
+        or home.mortgage is None
+        or home.mortgage.principal <= 0
+    ):
+        builder.model.event_log.add(
+            Event(f"mortgage prepayment skipped: {event.home} has no active homeowner mortgage")
+        )
+        return
+    if home.person is not person and not person.is_deceased:
+        raise ValueError("A mortgage prepayment needs an existing mortgage on the borrower's home")
+    owner = home.person
+    when = scheduled_date(event)
     tax_holdback = None
     if builder.spec.meta.ontario_retirement_tax is not None:
         from ..tax.ontario_policy import cash_reserve_for_owner
 
-        tax_holdback = float(cash_reserve_for_owner(person)) if event.reserve_ontario_tax else 0.0
+        tax_holdback = float(cash_reserve_for_owner(owner)) if event.reserve_ontario_tax else 0.0
     cash_floor = event.cash_floor
     if event.reserve_rrsp_fraction:
         room = next(
-            (a.room for a in person.canadian_deferred if a.kind == "RRSP" and a.room is not None),
+            (a.room for a in owner.canadian_deferred if a.kind == "RRSP" and a.room is not None),
             None,
         )
         if room is not None:
@@ -1286,16 +1414,13 @@ def _owned_bridge(builder: "_Builder", person, bridge_id: str):
 
 
 def _bridge_transaction(builder: "_Builder", event: s.DrawBridgeEvent | s.RepayBridgeEvent) -> None:
-    from datetime import date
-
     from ..debt.bridge import DatedBridgeLine
 
     line = builder.built.items.get(event.bridge)
     if not isinstance(line, DatedBridgeLine) or (line.home is not None and line.home.sold) or line.person.is_deceased:
         builder.model.event_log.add(Event(f"bridge transaction skipped: {event.bridge} has no active borrower"))
         return
-    assert event.at.year is not None and event.at.month is not None and event.at.day is not None
-    when = date(event.at.year, event.at.month, event.at.day)
+    when = scheduled_date(event)
     if isinstance(event, s.DrawBridgeEvent):
         rental_home = builder.built.items.get(event.rental_home) if event.rental_home is not None else None
         line.draw(event.amount, when=when, rental_home=rental_home, eligible_principal=event.eligible_principal)

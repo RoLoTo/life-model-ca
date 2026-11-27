@@ -50,6 +50,7 @@ A complete household: metadata, optional economy overrides, people, relationship
 | `corporations` | list[[CorporationSpec](#corporationspec)] |  | [] |  | Wholly owned Canadian corporations with separate assets and obligations. |
 | `relationships` | [Relationships](#relationships) |  | {} |  | Marriages. |
 | `withdrawal_order` | list[`"bank"` \\| `"fixed_income"` \\| `"brokerage"` \\| `"roth_basis"` \\| `"pretax"` \\| `"roth_earnings"` \\| `"reserve"` \\| `"tax_free"` \\| `"corporate_dividend"`] (optional) |  | — | `Family.withdrawal_order` | Household payment waterfall: the order sources are drawn to pay bills and taxes, across every member. Each source exactly once, starting with 'bank'. Defaults to bank, fixed_income, brokerage, roth_basis, pretax, roth_earnings, reserve (fixed_income and reserve may be left out: they then take those places). Canadian forecasts may add corporate_dividend to cover monthly bills and dated Ontario tax payments using corporations with shortfall_dividends_from set. |
+| `withdrawal_floors` | map[`"fixed_income"` \\| `"brokerage"` \\| `"pretax"` \\| `"roth"` \\| `"reserve"` → number] (optional) | USD | — | `Family.withdrawal_floors` | Household-wide minimum combined balance to keep in each named non-bank waterfall source ('roth' covers both 'roth_basis' and 'roth_earnings' against the combined Roth balance). Waterfall draws for bills and taxes stop at each floor and spill to the next source; statutory RMDs, HSA medical reimbursements, Roth conversions, contribution plans and explicit events still run. For cash floors, use a reserve bank account or SavingsPolicy.cash_floor. |
 | `events` | list[one of: [MarryEvent](#marryevent), [DivorceEvent](#divorceevent), [RetireEvent](#retireevent), [ChangeJobEvent](#changejobevent), [MoveEvent](#moveevent), [BuyHomeEvent](#buyhomeevent), [SellHomeEvent](#sellhomeevent), [ConvertHomeToOntarioRentalEvent](#converthometoontariorentalevent), [HomeValuationEvent](#homevaluationevent), [OneTimeExpenseEvent](#onetimeexpenseevent), [RecurringExpenseEvent](#recurringexpenseevent), [ChangeSpendingEvent](#changespendingevent), [AddAccountEvent](#addaccountevent), [ReserveCashEvent](#reservecashevent), [ContributeEvent](#contributeevent), [RRSPContributeEvent](#rrspcontributeevent), [WithdrawRegisteredEvent](#withdrawregisteredevent), [RRSPToRRIFEvent](#rrsptorrifevent), [TransferCashEvent](#transfercashevent), [SellBrokerageEvent](#sellbrokerageevent), [OntarioTaxStatementEvent](#ontariotaxstatementevent), [CharitableGiftEvent](#charitablegiftevent), [CorporateOperatingCashEvent](#corporateoperatingcashevent), [CorporateInvestmentTransferEvent](#corporateinvestmenttransferevent), [CorporatePayrollEvent](#corporatepayrollevent), [CorporatePayDividendEvent](#corporatepaydividendevent), [CorporateCharitableGiftEvent](#corporatecharitablegiftevent), [CorporateIncomeTaxEvent](#corporateincometaxevent), [SellPrivateSharesEvent](#sellprivatesharesevent), [ExercisePrivateOptionsEvent](#exerciseprivateoptionsevent), [ConvertCurrencyEvent](#convertcurrencyevent), [MoveForeignCashEvent](#moveforeigncashevent), [StopContributionEvent](#stopcontributionevent), [ChangeContributionEvent](#changecontributionevent), [ConvertToRothEvent](#converttorothevent), [ClaimSocialSecurityEvent](#claimsocialsecurityevent), [DieEvent](#dieevent), [RefinanceEvent](#refinanceevent), [MortgageRenewalEvent](#mortgagerenewalevent), [MortgageMaturityEvent](#mortgagematurityevent), [MortgagePrepaymentEvent](#mortgageprepaymentevent), [HelocDrawEvent](#helocdrawevent), [DrawBridgeEvent](#drawbridgeevent), [RepayBridgeEvent](#repaybridgeevent), [BridgePrepaymentEvent](#bridgeprepaymentevent), [DisabilityEvent](#disabilityevent)] |  | [] |  | Dated life events. |
 | `actuals` | map[integer → [ActualRecords](#actualrecords)] (optional) |  | — |  | What the household's real documents say, by tax year (filed 1040 lines, W-2s, 1099s, statement balances): read by 'life-model reconcile' and the backtest, ignored by the builder. Keep real documents in my-models/ (git-ignored). |
 
@@ -378,7 +379,7 @@ Builds: `CashReserve`.
 | `name` | string |  | `"Earmarked cash"` |  | Label used on the ledger. |
 | `balance` | number | USD | **required** |  | Starting earmarked balance. |
 | `release_on` | date |  | **required** |  | Calendar date when the balance becomes available. |
-| `interest_pct` | number | percent | `0.0` |  | Annual interest rate earned while earmarked. |
+| `interest_pct` | number | percent | `0.0` |  | Annual interest rate accrued using actual days/365 (compounded at calendar month ends and booked through release_on); taxed as ordinary interest. |
 
 ## ForeignCashAccount
 
@@ -890,7 +891,7 @@ Builds: `HomeEquityLine`.
 
 ## BridgeLine
 
-Approved credit line with dated draws, repayments, and optional Canadian rental tracing.
+Approved credit line with dated draws, repayments, actual-days/365 interest and optional Canadian rental tracing. ``interest_mode`` controls whether interest accrues simply on drawn principal (``"simple"``), capitalizes into the interest-bearing balance at each calendar month end (``"compound_monthly"``), or is billed monthly through the household payment waterfall (``"monthly_interest"``).
 
 Builds: `DatedBridgeLine`.
 
@@ -900,13 +901,13 @@ Builds: `DatedBridgeLine`.
 | `id` | string (optional) |  | — |  | Optional identifier for this debt, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
 | `home` | string (optional) |  | — | `DatedBridgeLine.home` | Id of the home securing the line, if home-secured. |
 | `name` | string (optional) |  | — |  | Display name. |
-| `credit_limit` | number | USD | **required** |  | Maximum drawn principal in whole cents. |
-| `rate_pct` | number | percent | **required** |  | Annual simple interest rate. |
+| `credit_limit` | number | USD | **required** |  | Maximum drawn principal plus capitalized interest in whole cents. |
+| `rate_pct` | number | percent | **required** |  | Annual interest rate. |
+| `interest_mode` | `"simple"` \\| `"compound_monthly"` \\| `"monthly_interest"` |  | `"simple"` |  | How actual-days/365 interest is handled: 'simple' accrues on drawn principal only, 'compound_monthly' capitalizes unpaid interest at each calendar month end (counting capitalized interest toward credit_limit headroom), and 'monthly_interest' bills accrued interest monthly through the household waterfall. |
 | `drawn_principal` | number | USD | `0.0` |  | Opening drawn principal in whole cents. |
+| `capitalized_interest` | number | USD | `0.0` |  | Opening interest already capitalized into the interest-bearing balance in whole cents (only valid for 'compound_monthly' with drawn principal). |
 | `accrued_interest` | number | USD | `0.0` |  | Opening unpaid interest, which can include fractional cents. |
 | `accrued_through` | date (optional) |  | — |  | Date through which opening interest was calculated. |
-| `interest_mode` | `"simple"` \\| `"compound_monthly"` \\| `"monthly_interest"` |  | `"simple"` |  | Accrual and servicing rule: 'simple' (unserviced), 'compound_monthly' (monthly capitalized), or 'monthly_interest' (monthly interest-only payments). |
-| `capitalized_interest` | number | USD | `0.0` |  | Opening capitalized unpaid interest in whole cents (compound_monthly only). |
 | `rental_home` | string (optional) |  | — | `DatedBridgeLine.rental_home` | Id of the home whose acquisition debt the eligible principal traces to (independent of collateral). |
 | `eligible_principal` | number | USD | `0.0` |  | Portion of opening drawn principal traced to qualifying rental acquisition debt, in whole cents. |
 | `eligible_accrued_interest` | number | USD | `0.0` |  | Portion of opening accrued interest earned during active rental periods on eligible principal. |
@@ -957,22 +958,11 @@ Builds: `Mortgage`.
 | `extra_principal_monthly` | number | USD/month | `0.0` | `Loan.extra_principal_monthly` | Extra principal paid with every payment (paid with the month's bills). |
 | `schedule` | `"contract"` \\| `"statement"` |  | `"contract"` | `Loan.schedule` | Which inputs to trust. 'contract' (default): the original terms define the schedule and the statement must agree (a balance above the original schedule is an error). 'statement': the loan is behind its original schedule (late payments, a deferral, a forbearance) and the statement's balance is right: it amortizes from balance at payment_monthly, else over remaining_months, else at the contract payment of original_amount over the term (paying off after the original maturity); original_amount, term and origination are then kept for the record. Needs balance. |
 | `rate_compounding` | `"monthly"` \\| `"semiannual"` |  | `"monthly"` | `Mortgage.rate_compounding` | Compounding of the quoted annual rate. Semiannual quotes are converted to the monthly equivalent. |
-| `prepayment_privilege` | [MortgagePrepaymentPrivilege](#mortgageprepaymentprivilege) (optional) |  | — | `Mortgage.prepayment_privilege` | Optional contract cap on lump sums. |
 | `renewal_state` | [MortgageRenewalState](#mortgagerenewalstate) (optional) |  | — | `Mortgage.renewal_state` | PMI and acquisition debt state saved alongside the current repayment schedule after renewal. |
 | `rental_eligible_principal` | number (optional) | USD | — | `Mortgage.rental_eligible_principal` | Optional Canadian rental acquisition principal tracked separately from personal cash-out. |
+| `prepayment_privilege` | [MortgagePrepaymentPrivilege](#mortgageprepaymentprivilege) (optional) |  | — | `Mortgage.prepayment_privilege` | Optional contract cap on lump sums. |
 | `start_year` | integer (optional) | year | — | `Mortgage.start_date` | Year the loan was originated (prefer origination). Without a balance, a year before the start is taken as an origination in January of that year. |
 | `escrow_monthly` | number (optional) | USD/month | — | `Mortgage.escrow_monthly` | Escrow included in payment_monthly (subtracted: the home's expenses pay tax and insurance). |
-
-## MortgagePrepaymentPrivilege
-
-Annual cap on lump-sum principal payments.
-
-| Field | Type | Unit | Default | Maps to | Description |
-|---|---|---|---|---|---|
-| `anniversary` | date |  | **required** |  | First eligible date and annual reset anniversary. |
-| `annual_limit_pct` | number | percent | **required** |  | Percentage of the fixed contract basis allowed per contract year. |
-| `basis_amount` | number (optional) | USD | — |  | Fixed contract amount. Defaults to the original mortgage or the balance at renewal. |
-| `used` | number | USD | `0.0` |  | Amount already used in the opening contract year. |
 
 ## MortgageRenewalState
 
@@ -991,6 +981,17 @@ Builds: `MortgageRenewalState`.
 | `acquisition_cap` | number (optional) | USD | — |  | Maximum acquisition debt balance (omit if all debt qualifies). |
 | `grandfathered_cap` | number | USD | `0.0` |  | Maximum grandfathered debt balance. |
 | `rental_eligible_principal` | number (optional) | USD | — |  | Portion of principal traced to qualifying Canadian rental acquisition debt. |
+
+## MortgagePrepaymentPrivilege
+
+Annual cap on lump-sum principal payments.
+
+| Field | Type | Unit | Default | Maps to | Description |
+|---|---|---|---|---|---|
+| `anniversary` | date |  | **required** |  | First eligible date and annual reset anniversary. |
+| `annual_limit_pct` | number | percent | **required** |  | Percentage of the fixed contract basis allowed per contract year. |
+| `basis_amount` | number (optional) | USD | — |  | Fixed contract amount. Defaults to the original mortgage or the balance at renewal. |
+| `used` | number | USD | `0.0` |  | Amount already used in the opening contract year. |
 
 ## HomeExpenses
 
@@ -1068,7 +1069,7 @@ Builds: `Insurance`.
 | `id` | string (optional) |  | — |  | Optional identifier for this policy, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
 | `company` | string |  | `"Insurer"` | `Insurance.company` | Insurer. |
 | `premium_annual` | number | USD/year | **required** | `Insurance.annual_premium` | Annual premium. |
-| `coverage_amount` | number | USD | **required** | `Insurance.coverage_amount` | Coverage limit. |
+| `coverage_amount` | number | USD | **required** | `Insurance.coverage_amount` | Coverage limit (ltc: the yearly benefit). |
 | `deductible` | number | USD | `0.0` | `Insurance.deductible` | Deductible. |
 | `coverage_start_age` | integer (optional) | age | — | `Insurance.coverage_start_age` | Coverage start age (immediate when unset). |
 | `coverage_end_age` | integer (optional) | age | — | `Insurance.coverage_end_age` | Coverage end age (lifetime when unset). |
@@ -1078,10 +1079,13 @@ Builds: `Insurance`.
 | `coinsurance_pct` | number (optional) | percent | — | `Insurance.coinsurance_pct` | Health: the person's share of costs above the deductible (100 when unset). |
 | `benefit_pct` | number (optional) | percent | — | `Insurance.benefit_pct` | Disability: share of pre-disability pay replaced (paid after a 'disability' event). |
 | `benefit_max_monthly` | number (optional) | USD/month | — | `Insurance.benefit_max_monthly` | Disability: monthly benefit cap. |
-| `elimination_months` | integer | months | `3` | `Insurance.elimination_months` | Disability: months before benefits start. |
+| `elimination_months` | integer | months | `3` | `Insurance.elimination_months` | Disability: months before benefits start; ltc: care months before benefits start (met once). |
 | `benefit_end_age` | number (optional) | age | — | `Insurance.benefit_end_age` | Disability: age benefits stop (coverage_end_age, else 65, when unset). |
 | `marketplace` | [Marketplace](#marketplace) (optional) |  | — | `Insurance.marketplace` | health: bought on the ACA marketplace (premium paid monthly while covered, net of any advance credit; the premium tax credit on the return). |
 | `benefits_taxable` | boolean |  | `False` | `Insurance.benefits_taxable` | Disability: premiums paid by the employer or pre-tax, so benefits are taxable (else tax-free). |
+| `benefit_growth_pct` | number | percent | `0.0` | `Insurance.benefit_growth_pct` | ltc: inflation rider; the annual benefit (coverage_amount) and the lifetime maximum grow by this percent a year, compounded. |
+| `lifetime_benefit_max` | number (optional) | USD | — | `Insurance.lifetime_benefit_max` | ltc: the policy's lifetime benefit pool (unlimited when unset). |
+| `waive_premium_in_claim` | boolean |  | `True` | `Insurance.waive_premium_in_claim` | ltc: no premium for a year that starts while benefits are being paid. |
 
 ## Marketplace
 
@@ -1134,7 +1138,8 @@ Opt-in healthcare cost agents.
 | `medical_costs` | boolean |  | `False` | `MedicalCosts` | Age-banded out-of-pocket medical costs. |
 | `medical_costs_annual` | number (optional) | USD/year | — | `MedicalCosts.annual_cost` | The person's own yearly medical cost (start-year dollars, medical inflation) instead of the configured age bands; implies medical_costs. |
 | `medicare` | boolean |  | `False` | `Medicare` | Medicare premiums and IRMAA from the eligibility age. |
-| `long_term_care` | boolean |  | `False` | `LongTermCare` | Long-term-care hazard and costs. |
+| `long_term_care` | boolean |  | `False` | `LongTermCare` | Long-term-care need: a monthly onset hazard from the configured start age, an episode in home care, assisted living or a nursing home (each with its cost and a higher death hazard), claimed against any ltc insurance. |
+| `medicaid` | boolean |  | `False` | `LongTermCare.medicaid` | Medicaid pays long-term care once countable assets are spent down to the limit (a spouse at home keeps the resource allowance); the person pays their income above the personal needs allowance. Without it an unpaid care cost becomes debt. Needs long_term_care. |
 
 ## Donation
 
@@ -1484,17 +1489,17 @@ Size a purchase from available bank cash after protecting cash and paying costs.
 
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
-| `closing_costs` | Decimal |  | **required** |  | Cash closing costs before any configured transfer tax. |
+| `closing_costs` | number |  | **required** |  | Cash closing costs before any configured transfer tax. |
 | `land_transfer_tax` | `"ontario"` \\| `"toronto"` (optional) |  | — |  | Add residential land transfer tax to closing costs. Toronto includes both taxes. |
-| `rate_compounding` | `"monthly"` \\| `"semiannual"` |  | `"monthly"` |  | Compounding of the quoted mortgage interest rate. |
 | `prepayment_privilege` | [MortgagePrepaymentPrivilege](#mortgageprepaymentprivilege) (optional) |  | — |  | Optional lump-sum terms for the new mortgage, with zero opening usage. |
-| `cash_to_keep` | Decimal | USD | **required** |  | Bank cash to retain at closing. |
-| `minimum_down_payment` | Decimal | USD | **required** |  | Minimum cash down payment. |
-| `mortgage_limit` | Decimal | USD | **required** |  | Maximum financing available at closing. |
+| `cash_floor` | number | USD | **required** |  | Bank cash to retain at closing. |
+| `minimum_down_payment` | number | USD | **required** |  | Minimum cash down payment. |
+| `mortgage_limit` | number | USD | **required** |  | Maximum financing available at closing. |
 | `rate_pct` | number | percent | **required** |  | Mortgage APR for the new loan. |
+| `rate_compounding` | `"monthly"` \\| `"semiannual"` |  | `"monthly"` |  | Compounding of the quoted rate (semiannual quotes convert to the monthly equivalent). |
 | `term_years` | integer | years | **required** |  | Mortgage amortization in years. |
-| `down_payment_fraction` | Decimal |  | `1` |  | Share of available cash to put down after costs and retained cash (0 to 1). |
-| `extra_down_payment` | Decimal | USD | `0` |  | Cash to add to the chosen share, subject to available funds. |
+| `down_payment_fraction` | number |  | `1.0` |  | Share of available cash to put down after costs and retained cash (0 to 1). |
+| `extra_down_payment` | number | USD | `0.0` |  | Cash to add to the chosen share, subject to available funds. |
 | `reserve_ontario_tax` | boolean |  | `False` |  | Hold back outstanding and accrued Ontario personal income tax before sizing the down payment. |
 
 ## SellHomeEvent
@@ -1623,9 +1628,9 @@ Move cash from an owned bank into an earmark until its scheduled release.
 | `action` | `"reserve_cash"` |  | **required** |  |  |
 | `pool_cash` | boolean |  | `False` |  | Top up from the same owner's other available CAD banks. |
 | `bank` | string |  | **required** |  | Id of the owner's funding bank. |
-| `amount` | number | USD | **required** |  | Cash to earmark. |
+| `amount` | number | USD | **required** |  | Cash to earmark (less when the bank's cash after the year's unpaid tax falls short). |
 | `release_on` | date |  | **required** |  | Release date in a later month, before ordinary events that day. |
-| `interest_pct` | number | percent | `0.0` |  | Annual interest rate earned while earmarked. |
+| `interest_pct` | number | percent | `0.0` |  | Annual interest rate accrued using actual days/365 (compounded at calendar month ends and booked through release_on); taxed as ordinary interest. |
 
 ## ContributeEvent
 
@@ -2083,6 +2088,7 @@ Refinance a mortgage (``debt`` is the home's id) or a car or student loan: a new
 | `action` | `"refinance"` |  | **required** |  |  |
 | `debt` | string |  | **required** |  | Id of the home (its mortgage) or of the car / student loan. |
 | `rate_pct` | number | percent | **required** |  | New APR. |
+| `rate_compounding` | `"monthly"` \\| `"semiannual"` |  | `"monthly"` |  | Compounding of a mortgage's new quoted rate. Semiannual quotes are converted to the monthly equivalent. Car and student loans use monthly. |
 | `term_years` | integer (optional) | years | — |  | New term in years. |
 | `term_months` | integer (optional) | months | — |  | New term in months. |
 | `costs` | number | USD | `0.0` |  | Closing costs. |

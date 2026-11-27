@@ -38,6 +38,7 @@ from .model import Event, LifeModelAgent
 if TYPE_CHECKING:
     from .account.bank import BankAccount
     from .people.person import Person
+    from .people.tax_unit import TaxUnit
     from .work.job import Job
 
 #: ``ContributionPlan`` sources.
@@ -311,6 +312,8 @@ class SavingsPolicy:
                 (swept at the year end), or a tax-advantaged account or 529 (swept at the start of the
                 following year, within its room). None keeps the cash (no sweep).
             source_bank: The owner's spendable bank account that alone funds the sweep, when supplied.
+                Assigning the policy to a person checks that the person holds it as a non-reserve bank
+                account.
             start_year: First transfer year, inclusive.
             end_year: Last transfer year, inclusive.
             reserve_ontario_tax: Also retain the owner's estimated Ontario tax.
@@ -634,13 +637,19 @@ def available_cash_after_tax(person: "Person") -> float:
 
     cash = person.usable_bank_balance
     unit = TaxUnit.for_member(person)
-    owed = sum(getattr(m, "taxes_owed", 0.0) for m in unit.living_members)
-    reserve = owed + unit.expected_unpaid_tax()
+    reserve = unit_tax_holdback(unit)
     if reserve > 0:
         bank = unit.bank_account_balance
         share = cash / bank if bank > 0 else 1.0
         cash -= reserve * share
     return max(0.0, cash)
+
+
+def unit_tax_holdback(unit: "TaxUnit") -> float:
+    """Tax the unit still owes from its bank cash: last year's balance due until April plus this year's
+    tax accrued so far and not yet withheld or paid (:meth:`TaxUnit.expected_unpaid_tax`)."""
+    owed = sum(getattr(m, "taxes_owed", 0.0) for m in unit.living_members)
+    return owed + unit.expected_unpaid_tax()
 
 
 def _contribute_from_bank(person: "Person", plan: ContributionPlan) -> float:

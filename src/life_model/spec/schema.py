@@ -35,9 +35,6 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..debt.terms import MortgageRateCompounding
-from ..housing.prepayment import MortgagePrepaymentPrivilege as ContractPrepaymentPrivilege
-
 #: Version of the spec format written by :func:`life_model.spec.io.dump`.
 SPEC_VERSION = 1
 
@@ -932,10 +929,18 @@ class CashReserveAccount(SpecModel):
     kind: Literal["cash_reserve"]
     id: Identifier | None = _id_field("account")
     name: str = spec_field("Earmarked cash", description="Label used on the ledger.")
-    balance: float = spec_field(description="Starting earmarked balance.", unit="USD", gt=0, allow_inf_nan=False)
+    balance: NonNegativeMoney = spec_field(
+        description="Starting earmarked balance.", unit="USD", gt=0, allow_inf_nan=False
+    )
     release_on: date = spec_field(description="Calendar date when the balance becomes available.")
     interest_pct: NonNegativePercent = spec_field(
-        0.0, description="Annual interest rate earned while earmarked.", unit="percent"
+        0.0,
+        description=(
+            "Annual interest rate accrued using actual days/365 (compounded at calendar month ends and "
+            "booked through release_on); taxed as ordinary interest."
+        ),
+        unit="percent",
+        allow_inf_nan=False,
     )
 
 
@@ -2103,8 +2108,19 @@ class HomeEquityLine(SpecModel):
         return self
 
 
+#: Interest accrual and servicing mode of a bridge line (``debt.bridge.BridgeInterestMode``).
+BridgeInterestMode = Literal["simple", "compound_monthly", "monthly_interest"]
+
+
 class BridgeLine(SpecModel):
-    """Approved credit line with dated draws, repayments, and optional Canadian rental tracing."""
+    """Approved credit line with dated draws, repayments, actual-days/365 interest and optional Canadian
+    rental tracing.
+
+    ``interest_mode`` controls whether interest accrues simply on drawn principal (``"simple"``),
+    capitalizes into the interest-bearing balance at each calendar month end
+    (``"compound_monthly"``), or is billed monthly through the household payment waterfall
+    (``"monthly_interest"``).
+    """
 
     CORE_CLASS = "DatedBridgeLine"
 
@@ -2115,11 +2131,33 @@ class BridgeLine(SpecModel):
     )
     name: str | None = spec_field(None, description="Display name.")
     credit_limit: NonNegativeMoney = spec_field(
-        description="Maximum drawn principal in whole cents.", unit="USD", multiple_of=0.01, allow_inf_nan=False
+        description="Maximum drawn principal plus capitalized interest in whole cents.",
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
     )
-    rate_pct: NonNegativePercent = spec_field(description="Annual simple interest rate.", unit="percent")
+    rate_pct: NonNegativePercent = spec_field(description="Annual interest rate.", unit="percent")
+    interest_mode: BridgeInterestMode = spec_field(
+        "simple",
+        description=(
+            "How actual-days/365 interest is handled: 'simple' accrues on drawn principal only, "
+            "'compound_monthly' capitalizes unpaid interest at each calendar month end (counting "
+            "capitalized interest toward credit_limit headroom), and 'monthly_interest' bills accrued "
+            "interest monthly through the household waterfall."
+        ),
+    )
     drawn_principal: NonNegativeMoney = spec_field(
         0.0, description="Opening drawn principal in whole cents.", unit="USD", multiple_of=0.01, allow_inf_nan=False
+    )
+    capitalized_interest: NonNegativeMoney = spec_field(
+        0.0,
+        description=(
+            "Opening interest already capitalized into the interest-bearing balance in whole cents "
+            "(only valid for 'compound_monthly' with drawn principal)."
+        ),
+        unit="USD",
+        multiple_of=0.01,
+        allow_inf_nan=False,
     )
     accrued_interest: NonNegativeMoney = spec_field(
         0.0,
@@ -2128,17 +2166,6 @@ class BridgeLine(SpecModel):
         allow_inf_nan=False,
     )
     accrued_through: date | None = spec_field(None, description="Date through which opening interest was calculated.")
-    interest_mode: Literal["simple", "compound_monthly", "monthly_interest"] = spec_field(
-        "simple",
-        description="Accrual and servicing rule: 'simple' (unserviced), 'compound_monthly' (monthly capitalized), or 'monthly_interest' (monthly interest-only payments).",
-    )
-    capitalized_interest: NonNegativeMoney = spec_field(
-        0.0,
-        description="Opening capitalized unpaid interest in whole cents (compound_monthly only).",
-        unit="USD",
-        multiple_of=0.01,
-        allow_inf_nan=False,
-    )
     rental_home: Identifier | None = spec_field(
         None,
         description="Id of the home whose acquisition debt the eligible principal traces to (independent of collateral).",
@@ -2181,7 +2208,9 @@ class BridgeLine(SpecModel):
         if self.accrued_interest and not self.drawn_principal:
             raise ValueError("Opening bridge interest requires drawn principal")
         if self.capitalized_interest and (self.interest_mode != "compound_monthly" or not self.drawn_principal):
-            raise ValueError("Opening capitalized bridge interest requires compound_monthly with drawn principal")
+            raise ValueError(
+                "Opening capitalized bridge interest requires interest_mode='compound_monthly' and drawn principal"
+            )
         if self.eligible_principal > self.drawn_principal:
             raise ValueError("Eligible rental principal cannot exceed opening drawn principal")
         if self.eligible_accrued_interest > self.accrued_interest:
@@ -2201,35 +2230,8 @@ Debt = Annotated[CarLoan | StudentLoan | CreditCard | HomeEquityLine | BridgeLin
 # --- Housing -------------------------------------------------------------------------------------
 
 
-class MortgagePrepaymentPrivilege(SpecModel):
-    """Annual cap on lump-sum principal payments."""
-
-    anniversary: date = spec_field(description="First eligible date and annual reset anniversary.")
-    annual_limit_pct: NonNegativePercent = spec_field(
-        description="Percentage of the fixed contract basis allowed per contract year.", unit="percent", le=100
-    )
-    basis_amount: NonNegativeMoney | None = spec_field(
-        None,
-        description="Fixed contract amount. Defaults to the original mortgage or the balance at renewal.",
-        unit="USD",
-        gt=0,
-        allow_inf_nan=False,
-    )
-    used: NonNegativeMoney = spec_field(
-        0.0, description="Amount already used in the opening contract year.", unit="USD", allow_inf_nan=False
-    )
-
-    def resolve(self, as_of: date, default_basis: float | None) -> ContractPrepaymentPrivilege:
-        basis = self.basis_amount if self.basis_amount is not None else default_basis
-        if basis is None:
-            raise ValueError("A prepayment cap needs a basis amount when the original principal is unknown")
-        return ContractPrepaymentPrivilege(
-            anniversary=self.anniversary,
-            annual_limit_pct=self.annual_limit_pct,
-            basis_amount=basis,
-            as_of=as_of,
-            used=self.used,
-        )
+#: Compounding convention of a quoted mortgage rate (``debt.terms.MortgageRateCompounding``).
+MortgageRateCompounding = Literal["monthly", "semiannual"]
 
 
 class MortgageRenewalState(SpecModel):
@@ -2256,6 +2258,25 @@ class MortgageRenewalState(SpecModel):
     )
 
 
+class MortgagePrepaymentPrivilege(SpecModel):
+    """Annual cap on lump-sum principal payments."""
+
+    anniversary: date = spec_field(description="First eligible date and annual reset anniversary.")
+    annual_limit_pct: NonNegativePercent = spec_field(
+        description="Percentage of the fixed contract basis allowed per contract year.", unit="percent", le=100
+    )
+    basis_amount: NonNegativeMoney | None = spec_field(
+        None,
+        description="Fixed contract amount. Defaults to the original mortgage or the balance at renewal.",
+        unit="USD",
+        gt=0,
+        allow_inf_nan=False,
+    )
+    used: NonNegativeMoney = spec_field(
+        0.0, description="Amount already used in the opening contract year.", unit="USD", allow_inf_nan=False
+    )
+
+
 class Mortgage(_LoanTerms):
     __doc__ = (
         "The mortgage on a home. "
@@ -2272,9 +2293,6 @@ class Mortgage(_LoanTerms):
         description="Compounding of the quoted annual rate. Semiannual quotes are converted to the monthly equivalent.",
         core="Mortgage.rate_compounding",
     )
-    prepayment_privilege: MortgagePrepaymentPrivilege | None = spec_field(
-        None, description="Optional contract cap on lump sums.", core="Mortgage.prepayment_privilege"
-    )
     renewal_state: MortgageRenewalState | None = spec_field(
         None,
         description="PMI and acquisition debt state saved alongside the current repayment schedule after renewal.",
@@ -2285,6 +2303,9 @@ class Mortgage(_LoanTerms):
         description="Optional Canadian rental acquisition principal tracked separately from personal cash-out.",
         unit="USD",
         core="Mortgage.rental_eligible_principal",
+    )
+    prepayment_privilege: MortgagePrepaymentPrivilege | None = spec_field(
+        None, description="Optional contract cap on lump sums.", core="Mortgage.prepayment_privilege"
     )
 
     start_year: Year | None = spec_field(
@@ -2609,7 +2630,7 @@ class GeneralInsurance(SpecModel):
         description="Annual premium.", unit="USD/year", core="Insurance.annual_premium"
     )
     coverage_amount: NonNegativeMoney = spec_field(
-        description="Coverage limit.", unit="USD", core="Insurance.coverage_amount"
+        description="Coverage limit (ltc: the yearly benefit).", unit="USD", core="Insurance.coverage_amount"
     )
     deductible: NonNegativeMoney = spec_field(0.0, description="Deductible.", unit="USD", core="Insurance.deductible")
     coverage_start_age: Age | None = spec_field(
@@ -2653,7 +2674,7 @@ class GeneralInsurance(SpecModel):
     )
     elimination_months: int = spec_field(
         3,
-        description="Disability: months before benefits start.",
+        description="Disability: months before benefits start; ltc: care months before benefits start (met once).",
         unit="months",
         core="Insurance.elimination_months",
         ge=0,
@@ -2674,6 +2695,24 @@ class GeneralInsurance(SpecModel):
         False,
         description="Disability: premiums paid by the employer or pre-tax, so benefits are taxable (else tax-free).",
         core="Insurance.benefits_taxable",
+    )
+    benefit_growth_pct: NonNegativePercent = spec_field(
+        0.0,
+        description="ltc: inflation rider; the annual benefit (coverage_amount) and the lifetime maximum grow by this "
+        "percent a year, compounded.",
+        unit="percent",
+        core="Insurance.benefit_growth_pct",
+    )
+    lifetime_benefit_max: NonNegativeMoney | None = spec_field(
+        None,
+        description="ltc: the policy's lifetime benefit pool (unlimited when unset).",
+        unit="USD",
+        core="Insurance.lifetime_benefit_max",
+    )
+    waive_premium_in_claim: bool = spec_field(
+        True,
+        description="ltc: no premium for a year that starts while benefits are being paid.",
+        core="Insurance.waive_premium_in_claim",
     )
 
 
@@ -2770,7 +2809,26 @@ class Healthcare(SpecModel):
     medicare: bool = spec_field(
         False, description="Medicare premiums and IRMAA from the eligibility age.", core="Medicare"
     )
-    long_term_care: bool = spec_field(False, description="Long-term-care hazard and costs.", core="LongTermCare")
+    long_term_care: bool = spec_field(
+        False,
+        description="Long-term-care need: a monthly onset hazard from the configured start age, an episode in home "
+        "care, assisted living or a nursing home (each with its cost and a higher death hazard), claimed against "
+        "any ltc insurance.",
+        core="LongTermCare",
+    )
+    medicaid: bool = spec_field(
+        False,
+        description="Medicaid pays long-term care once countable assets are spent down to the limit (a spouse at "
+        "home keeps the resource allowance); the person pays their income above the personal needs allowance. "
+        "Without it an unpaid care cost becomes debt. Needs long_term_care.",
+        core="LongTermCare.medicaid",
+    )
+
+    @model_validator(mode="after")
+    def _medicaid_needs_care(self) -> "Healthcare":
+        if self.medicaid and not self.long_term_care:
+            raise ValueError("medicaid needs long_term_care: true (Medicaid here pays long-term care)")
+        return self
 
 
 class Donation(SpecModel):
@@ -3490,7 +3548,7 @@ class MoveEvent(EventBase):
     new_rental: Rental | None = spec_field(None, description="A rental that starts now.")
 
 
-ClosingMoney = Annotated[Decimal, Field(ge=0, decimal_places=2, allow_inf_nan=False)]
+ClosingMoney = Annotated[NonNegativeMoney, Field(multiple_of=0.01, allow_inf_nan=False)]
 
 
 class HomeCashFunding(SpecModel):
@@ -3500,22 +3558,26 @@ class HomeCashFunding(SpecModel):
     land_transfer_tax: Literal["ontario", "toronto"] | None = spec_field(
         None, description="Add residential land transfer tax to closing costs. Toronto includes both taxes."
     )
-    rate_compounding: MortgageRateCompounding = spec_field(
-        "monthly", description="Compounding of the quoted mortgage interest rate."
-    )
     prepayment_privilege: MortgagePrepaymentPrivilege | None = spec_field(
         None, description="Optional lump-sum terms for the new mortgage, with zero opening usage."
     )
-    cash_to_keep: ClosingMoney = spec_field(description="Bank cash to retain at closing.", unit="USD")
+    cash_floor: ClosingMoney = spec_field(
+        description="Bank cash to retain at closing.",
+        unit="USD",
+        validation_alias=AliasChoices("cash_floor", "cash_to_keep"),
+    )
     minimum_down_payment: ClosingMoney = spec_field(description="Minimum cash down payment.", unit="USD")
     mortgage_limit: ClosingMoney = spec_field(description="Maximum financing available at closing.", unit="USD")
     rate_pct: NonNegativePercent = spec_field(description="Mortgage APR for the new loan.", unit="percent")
+    rate_compounding: MortgageRateCompounding = spec_field(
+        "monthly", description="Compounding of the quoted rate (semiannual quotes convert to the monthly equivalent)."
+    )
     term_years: int = spec_field(description="Mortgage amortization in years.", unit="years", ge=1)
-    down_payment_fraction: Annotated[Decimal, Field(ge=0, le=1)] = spec_field(
-        Decimal(1), description="Share of available cash to put down after costs and retained cash (0 to 1)."
+    down_payment_fraction: float = spec_field(
+        1.0, description="Share of available cash to put down after costs and retained cash (0 to 1).", ge=0, le=1
     )
     extra_down_payment: ClosingMoney = spec_field(
-        Decimal(0), description="Cash to add to the chosen share, subject to available funds.", unit="USD"
+        0.0, description="Cash to add to the chosen share, subject to available funds.", unit="USD"
     )
     reserve_ontario_tax: bool = spec_field(
         False,
@@ -3667,10 +3729,21 @@ class ReserveCashEvent(EventBase):
     action: Literal["reserve_cash"]
     pool_cash: bool = spec_field(False, description="Top up from the same owner's other available CAD banks.")
     bank: Identifier = spec_field(description="Id of the owner's funding bank.")
-    amount: float = spec_field(description="Cash to earmark.", unit="USD", gt=0, allow_inf_nan=False)
+    amount: NonNegativeMoney = spec_field(
+        description="Cash to earmark (less when the bank's cash after the year's unpaid tax falls short).",
+        unit="USD",
+        gt=0,
+        allow_inf_nan=False,
+    )
     release_on: date = spec_field(description="Release date in a later month, before ordinary events that day.")
     interest_pct: NonNegativePercent = spec_field(
-        0.0, description="Annual interest rate earned while earmarked.", unit="percent"
+        0.0,
+        description=(
+            "Annual interest rate accrued using actual days/365 (compounded at calendar month ends and "
+            "booked through release_on); taxed as ordinary interest."
+        ),
+        unit="percent",
+        allow_inf_nan=False,
     )
 
     @model_validator(mode="after")
@@ -4269,6 +4342,11 @@ class RefinanceEvent(EventBase):
     action: Literal["refinance"]
     debt: Identifier = spec_field(description="Id of the home (its mortgage) or of the car / student loan.")
     rate_pct: NonNegativePercent = spec_field(description="New APR.", unit="percent")
+    rate_compounding: MortgageRateCompounding = spec_field(
+        "monthly",
+        description="Compounding of a mortgage's new quoted rate. Semiannual quotes are converted to the monthly "
+        "equivalent. Car and student loans use monthly.",
+    )
     term_years: int | None = spec_field(None, description="New term in years.", unit="years", ge=1)
     term_months: int | None = spec_field(None, description="New term in months.", unit="months", ge=1)
     costs: NonNegativeMoney = spec_field(0.0, description="Closing costs.", unit="USD")
@@ -4679,6 +4757,9 @@ WithdrawalSource = Literal[
     "corporate_dividend",
 ]
 
+#: Non-bank waterfall sources that accept a balance floor (``people.tax_unit.WITHDRAWAL_FLOOR_SOURCES``).
+WithdrawalFloorSource = Literal["fixed_income", "brokerage", "pretax", "roth", "reserve"]
+
 
 # --- Top level -----------------------------------------------------------------------------------
 
@@ -4705,6 +4786,16 @@ class HouseholdSpec(SpecModel):
         "tax payments using corporations with shortfall_dividends_from set.",
         core="Family.withdrawal_order",
     )
+    withdrawal_floors: dict[WithdrawalFloorSource, NonNegativeMoney] | None = spec_field(
+        None,
+        description="Household-wide minimum combined balance to keep in each named non-bank waterfall source "
+        "('roth' covers both 'roth_basis' and 'roth_earnings' against the combined Roth balance). Waterfall draws "
+        "for bills and taxes stop at each floor and spill to the next source; statutory RMDs, HSA medical "
+        "reimbursements, Roth conversions, contribution plans and explicit events still run. For cash floors, "
+        "use a reserve bank account or SavingsPolicy.cash_floor.",
+        unit="USD",
+        core="Family.withdrawal_floors",
+    )
     events: list[Event] = spec_field(default_factory=list, description="Dated life events.")
     actuals: ActualsByYear | None = spec_field(
         None,
@@ -4720,6 +4811,15 @@ class HouseholdSpec(SpecModel):
             from ..people.tax_unit import validate_withdrawal_order
 
             validate_withdrawal_order(value)
+        return value
+
+    @field_validator("withdrawal_floors", mode="before")
+    @classmethod
+    def _valid_floors(cls, value: Any) -> dict[str, float] | None:
+        if value is not None:
+            from ..people.tax_unit import validate_withdrawal_floors
+
+            return validate_withdrawal_floors(value) or None
         return value
 
     def person(self, person_id: str) -> Person:

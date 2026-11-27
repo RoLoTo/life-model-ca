@@ -47,6 +47,7 @@ units are in [units-and-conventions.md](units-and-conventions.md).
 | SSA statement | `social_security.pia_override_monthly` (the full-retirement-age benefit) **with** `earnings_history` (year: covered earnings, from the same statement): the estimate assumes work until full retirement age, and the history lets an earlier retirement lower it; `claim_age`, `fra_from_birth_year`, `spousal_benefit` |
 | Children | `children[]`: `name`, `birth_year`, `birth_month`, `cost_override_annual` / `college_cost_annual` (the configured bands are added on top of spending unless overridden: 0 when the budget already includes the child), `care_expenses_annual` (until the 13th birthday), and `kind: 529` accounts that name them as `beneficiary` |
 | Health insurance after a job ends | `insurance[]` `kind: health` with `premium_annual`, `coverage_start_age` (the retirement age) and `coverage_end_age: 64` (for marketplace coverage add `marketplace: {slcsp_monthly, advance_monthly}`, which earns the ACA premium tax credit); `healthcare: {medicare: true}` from 65. Payroll premiums stop with the job |
+| Late life (retirees, or a run that reaches old age) | `mortality: stochastic` with `healthcare: {medical_costs: true, medicare: true, long_term_care: true}`: out-of-pocket medical costs by age, Medicare premiums, a long-term-care hazard (home care, assisted living or a nursing home), and the funeral and final-year medical costs at death (charged only with a `healthcare` block). An `ltc` policy (`coverage_amount` is the yearly benefit; `elimination_months`, `benefit_growth_pct` for an inflation rider, `lifetime_benefit_max`) pays only with `long_term_care: true`. Add `medicaid: true` when Medicaid should pay care once savings are spent down; otherwise an unpaid care cost becomes debt |
 | Term life policy | `kind: life`, `policy: term`, `issue_year` and `issue_month` (premiums on the anniversary; coverage ends at the last anniversary) |
 | Marriage | `relationships.marriages[]`: `spouses` (the first is the tax-unit head), `filing_status` |
 | Plans | `events[]`: `at: {year}` / `{age}` / `{relative: {after, years}}`, `person`, `action` (`retire`, `change_job`, `move`, `buy_home`, `one_time_expense`, `recurring_expense`, `change_spending`, `contribute`, `convert_to_roth`, `claim_social_security`, `refinance`, `renew_mortgage`, `heloc_draw`, `disability`, ...) |
@@ -55,6 +56,13 @@ Schedule `renew_mortgage` with the borrower's `person`, the `home` id, and an ef
 `at: 2030-07`. The new `rate_pct` applies to that month's regular payment using the current balance and
 remaining amortization. Set `amortization_months` to change the payment count or
 `rate_compounding: semiannual` to use a semiannual quote. Renewal adds no fees or cash-out.
+
+A `savings_policy` can name one spendable opening bank account with `source_bank`. The
+`cash_floor` then applies to that account alone. If you omit `source_bank`, the floor applies
+across spendable bank accounts. The destination must also be an opening account. Optional
+`start_year` and `end_year` bound the actual transfer year, inclusively. Taxable destinations
+receive the sweep at year end. Tax-advantaged accounts and 529s receive it at the start of the
+transfer year, up to that year's contribution room.
 
 Schedule `pay_mortgage_at_maturity` with the borrower's `person`, `home` id and an explicit
 `at: {year, month, day}`. It pays the live principal and the lender's quoted `interest_due` before the
@@ -66,17 +74,18 @@ give both events IDs that sort with the receipt first (for example, `01-sale` an
 Set the payoff's optional `bridge` to a borrower-owned `bridge_line` id to draw automatically.
 The draw rounds the amount needed to fund the payoff and preserve `cash_floor` up to whole cents,
 then caps it at approved headroom. The payoff records the bridge draw and carries any remaining gap
-as `shortfall_debt`, due with the next month's bills. The model treats bridge interest as
-non-deductible financing expense, including interest on an automatic draw. Qualified refinancing
-can count as acquisition debt up to the prior qualifying principal under U.S. rules.
-[IRS Publication 936](https://www.irs.gov/publications/p936)
+as `shortfall_debt`, due with the next month's bills. Bridge interest is never deductible in the
+model, including interest on an automatic draw. Under U.S. rules, debt that refinances a mortgage
+can stay acquisition debt up to the balance it replaced
+([IRS Publication 936](https://www.irs.gov/publications/p936)), but the model doesn't apply that
+rule to a bridge that pays off a mortgage, so the mortgage-interest deduction can be understated in
+that case.
 
 Schedule `prepay_mortgage` on the last calendar day of a month to apply spendable cash
 to principal after scheduled bills. Each month it uses the same tax holdback as bank-funded
 contributions, reserving cash for this year's accrued unpaid tax and any balance owed from last
 year. Set `cash_floor` to keep additional cash and `cash_fraction` to pay a share of the remaining
 surplus (for example, `0.5` for half). Scheduled payments continue at the contracted amount.
-Enter only prepayments permitted under the mortgage contract.
 
 In December, prepayment runs first, then annual taxes settle, then the taxable `savings_policy`
 sweep runs. The sweep applies its own `cash_floor`, and can leave less cash than the prepayment's
@@ -98,10 +107,13 @@ Use a `bridge_line` under `debts` for approved, short-term credit secured by an 
 home. Set the `home` id, `credit_limit`, and annual `rate_pct`. A `draw_bridge` event deposits
 its `amount` in spendable bank cash. A `repay_bridge` event draws spendable cash above `cash_floor`
 and carries any gap as `shortfall_debt` due with the next month's bills. Both events require an
-explicit calendar date and follow the current owner of the line. Interest accrues on drawn principal
-using actual days divided by 365. Outstanding interest counts toward liabilities, and the approved
-limit applies to principal. A sale of
-the collateral clears the bridge through the sale date before depositing the net proceeds.
+explicit calendar date and follow the current owner of the line. Interest accrues using actual
+days divided by 365 according to `interest_mode`: `"simple"` (the default) accrues on drawn
+principal only, `"compound_monthly"` capitalizes unpaid interest at each calendar month end (not
+on draw-date anniversaries), and `"monthly_interest"` bills accrued interest monthly through the
+household payment waterfall while keeping principal flat. Outstanding interest counts toward
+liabilities, and the approved limit applies to drawn principal plus any capitalized interest. A
+sale of the collateral clears the bridge through the sale date before depositing the net proceeds.
 For same-day events that rely on one another, give them IDs that sort in the intended order.
 
 With the Ontario return policy, mortgage maturity and bridge repayment report an infeasible
@@ -114,6 +126,34 @@ across spendable bank accounts. The destination must also be an opening account.
 `start_year` and `end_year` bound the actual transfer year, inclusively. Taxable destinations
 receive the sweep at year end. Tax-advantaged accounts and 529s receive it at the start of the
 transfer year, up to that year's contribution room.
+To set cash aside for a later date, such as a deposit held for a closing, schedule `reserve_cash`
+with the funding `bank` (an account the person owns), the `amount` and a `release_on` date in a
+later month, at an explicit `at: {year, month, day}`. Cash already earmarked on the statement date
+is an opening `cash_reserve` account with its `balance` and `release_on`. Earmarked cash counts in
+net worth (the model frame reports it as Cash Reserve Balance, not Bank Balance), earns no interest
+by default (set `interest_pct` to accrue taxable ordinary interest using actual days/365,
+compounded at calendar month ends and booked through `release_on`), and is never drawn to pay
+bills, even when the household has to borrow. On the release date it
+returns to the bank before that day's other events, so a same-day closing can use it. The earmark
+takes at most the bank's balance and the owner's cash after the year's unpaid tax; the
+`cash_reserved` event records the requested and earmarked amounts. After the person's death the
+bank's surviving owner funds it. The validator warns (`release_after_run`) when the release falls
+after the run ends.
+
+A `buy_home` event can size the purchase from bank cash with `cash_funding`: the `closing_costs`,
+a `cash_floor` to keep in the bank, the `minimum_down_payment`, the `mortgage_limit`, and the new
+loan's `rate_pct` (with `rate_compounding: semiannual` for a semiannual quote) and `term_years`.
+The required down payment, the larger of the minimum and the price above the mortgage limit, can
+use all bank cash above the costs and floor. `down_payment_fraction` and `extra_down_payment` add
+an optional share from cash left after the year's unpaid tax. The mortgage covers the rest of the
+price. When the bank can't cover the required down payment, the `closing_shortfall` event records
+the gap and the purchase closes on the required down payment through the household payment
+waterfall, so any amount no account covers becomes `shortfall_debt`. A purchase dated after the
+buyer's death is skipped, and later events on that home skip too.
+
+With the Ontario return policy, both are required instead. A closing the bank can't cover reports
+`ClosingShortfall`, and a `reserve_cash` earmark takes its full amount (`pool_cash` tops the funding
+bank up from the owner's other banks) or reports an infeasible funding plan.
 
 Two rules matter most. **Never invent a value**: a missing balance or rate is a question for the
 person, or a labeled assumption, never a plausible-looking number. Behavioral inputs that

@@ -36,10 +36,11 @@ def _cents(amount: Decimal) -> Decimal:
 class DatedBridgeLine(HomeEquityLine):
     """Approved credit line with dated draws, repayments, and optional Canadian rental tracing.
 
-    Accrued interest counts as a liability. The credit limit applies to drawn principal.
-    ``interest_mode`` controls whether actual-days/365 interest accrues simply on drawn
-    principal (``"simple"``), capitalizes monthly (``"compound_monthly"``), or is billed
-    monthly through the household payment waterfall (``"monthly_interest"``).
+    Accrued interest counts as a liability. The credit limit applies to drawn principal plus any
+    capitalized interest. ``interest_mode`` controls whether actual-days/365 interest accrues
+    simply on drawn principal (``"simple"``), capitalizes into the interest-bearing balance at
+    each calendar month end (``"compound_monthly"``), or is billed monthly through the household
+    payment waterfall (``"monthly_interest"``).
 
     Securing collateral (``home``, optional) is independent of rental tax tracing
     (``rental_home`` and ``eligible_principal``). Principal repayments reduce eligible
@@ -49,6 +50,8 @@ class DatedBridgeLine(HomeEquityLine):
     eligible interest (ITA s. 20(1)(d), ``compound_monthly`` only) is tracked in
     ``eligible_unpaid_compound_interest`` and deducted only when paid.
     """
+
+    interest_sink = "bridge interest"
 
     def __init__(
         self,
@@ -101,7 +104,8 @@ class DatedBridgeLine(HomeEquityLine):
             or (capitalized and (interest_mode != "compound_monthly" or not principal))
         ):
             raise ValueError(
-                "Opening capitalized bridge interest must be non-negative whole cents and requires compound_monthly with drawn principal"
+                "Opening capitalized bridge interest must be non-negative whole cents and requires "
+                "compound_monthly with drawn principal"
             )
         if (
             not elig_principal.is_finite()
@@ -156,7 +160,7 @@ class DatedBridgeLine(HomeEquityLine):
     def get_available_credit(self) -> float:
         if self.home is not None and self.home.sold:
             return 0.0
-        return float(max(_ZERO, Decimal(str(self.credit_limit)) - self.drawn_principal))
+        return float(max(_ZERO, Decimal(str(self.credit_limit)) - self.drawn_principal - self.capitalized_interest))
 
     def _rental_is_active(self) -> bool:
         return (
@@ -196,6 +200,7 @@ class DatedBridgeLine(HomeEquityLine):
         return date(year, month, monthrange(year, month)[1])
 
     def _accrue(self, when: date) -> None:
+        """Book interest through ``when``: it is charged, and counted in the interest stats, as it accrues."""
         total_delta, ordinary_delta, compound_delta = self._interest_delta(when)
         interest = self.accrued_interest + total_delta
         eligible_interest = min(interest, self.eligible_accrued_interest + ordinary_delta + compound_delta)
@@ -213,11 +218,14 @@ class DatedBridgeLine(HomeEquityLine):
         self.eligible_accrued_interest = eligible_interest
         self.accrued_through = when if self.drawn_principal else None
         self.balance = float(self.drawn_principal + self.capitalized_interest + _cents(interest))
+        charged = float(increment)
+        self.interest_paid_this_year += charged
+        self.person.stat_interest_paid = snap_money(self.person.stat_interest_paid + charged)
         self.model.ledger.post(
-            float(increment),
+            charged,
             FlowKind.DEBT_SERVICE,
             from_account=self,
-            sink="bridge interest",
+            sink=self.interest_sink,
             cause=f"Bridge interest accrued through {when.isoformat()}",
             agent=self.person,
         )
@@ -332,6 +340,8 @@ class DatedBridgeLine(HomeEquityLine):
 
     @property
     def monthly_payment(self) -> float:
+        """Approximate monthly interest estimate (``rate / 12`` on drawn principal) under
+        ``monthly_interest``; actual billing in :meth:`service_month` uses actual days/365."""
         if self.interest_mode != "monthly_interest" or not self.drawn_principal:
             return 0.0
         rate = Decimal(str(self.yearly_interest_rate)) / 1200
@@ -339,7 +349,7 @@ class DatedBridgeLine(HomeEquityLine):
 
     def service_month(self) -> float:
         """Pay accrued interest monthly under ``monthly_interest``; other modes settle at payoff."""
-        if self.interest_mode != "monthly_interest" or not self.drawn_principal:
+        if self.interest_mode != "monthly_interest" or not self.drawn_principal or self.person.is_deceased:
             return 0.0
         year, month = self.model.year, self.model.month
         boundary = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
@@ -360,7 +370,9 @@ class DatedBridgeLine(HomeEquityLine):
         return float(total_interest)
 
     def post_step(self) -> None:
-        if self.drawn_principal:
+        # A line still owned by a decedent was discharged with an estate that had no heir (an heir or
+        # surviving spouse takes the line over); like the estate's other debts, it is frozen.
+        if self.drawn_principal and not self.person.is_deceased:
             year, month = self.model.year, self.model.month
             boundary = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
             self._accrue(boundary)
@@ -480,8 +492,6 @@ class DatedBridgeLine(HomeEquityLine):
             not preserve_accrued_through and self.drawn_principal == 0 and self.interest_mode != "monthly_interest"
         ):
             self.stat_interest_payment_history.append(float(interest_paid))
-        self.interest_paid_this_year += float(interest_paid)
-        self.person.stat_interest_paid = snap_money(self.person.stat_interest_paid + float(interest_paid))
         if self.drawn_principal == 0 and self.capitalized_interest == 0 and _cents(self.accrued_interest) == 0:
             self.accrued_through = None
             self.balance = 0.0
@@ -583,13 +593,11 @@ class DatedBridgeLine(HomeEquityLine):
         return float(paid)
 
     def _clear(self) -> None:
-        interest_paid = float(self.capitalized_interest + _cents(self.accrued_interest))
         if self.drawn_principal:
             self.stat_principal_payment_history.append(float(self.drawn_principal))
+            interest_paid = float(self.capitalized_interest + _cents(self.accrued_interest))
             if self.interest_mode != "monthly_interest" or interest_paid > 0:
                 self.stat_interest_payment_history.append(interest_paid)
-        self.interest_paid_this_year += interest_paid
-        self.person.stat_interest_paid = snap_money(self.person.stat_interest_paid + interest_paid)
         self.drawn_principal = self.capitalized_interest = self.accrued_interest = _ZERO
         self.eligible_principal = self.eligible_capitalized_interest = self.eligible_accrued_interest = _ZERO
         self.eligible_unpaid_compound_interest = _ZERO

@@ -63,6 +63,7 @@ at the year end.
 | 529 Balance | `stat_529_balance` | EXTRA_STATS | Plan529 | sum | yes |  | 529 education plan balances at year end. |
 | Fixed Income Balance | `stat_fixed_income_balance` | EXTRA_STATS | FixedIncomeHolding | sum | yes |  | CDs, Treasuries, I bonds and bond funds (fixed-income holdings) at year end. |
 | Inherited IRA Balance | `stat_inherited_ira_balance` | EXTRA_STATS | InheritedPretaxAccount | sum | yes |  | Inherited (10-year rule) IRA balances. |
+| Cash Reserve Balance | `stat_cash_reserve_balance` | EXTRA_STATS | CashReserve | sum | yes |  | Earmarked cash held until its release date (counted in net worth, not in Bank Balance). |
 | Annuity Balance | `stat_annuity_balance` | EXTRA_STATS | Annuity | sum | yes |  | Annuity accumulation balances plus annuitized reserves. |
 | DAF Balance | `stat_daf_balance` | EXTRA_STATS | DonorAdvisedFund | sum | yes |  | Donor-advised fund balances (not counted in net worth). |
 | Trust Balance | `stat_trust_balance` | EXTRA_STATS | Trust | sum | yes |  | Trust balances (only revocable trusts count in net worth). |
@@ -300,12 +301,14 @@ to start-year dollars.
 | `year` | Simulated year. |
 | `month` | Simulated month (1–12). |
 | `account` | Balance-sheet label, also used in the ledger's from and to columns. |
-| `account_type` | Agent class or type of a balance-sheet line such as `Cash` or `TaxDue`. |
+| `account_type` | Household spec `kind` of the item holding the line (`bank`, `401k`, `home`, `bridge_line`), `mortgage`, or for a person's own lines `cash`, `unpaid_bills_debt`, `tax_due` or `tax_refund`. A class that no spec item builds appears in snake case. |
 | `account_name` | Display name at the month end. |
-| `account_spec_id` | Household spec item ID when the position's agent has one. |
+| `account_spec_id` | Household spec item `id`; a mortgage reports its home's. Empty for an item written without an `id` and for a person's own lines. |
 | `owner_id` | Owner's model ID at the month end. |
 | `owner_name` | Owner's display name at the month end. |
 | `owner_spec_id` | Household spec person ID when known. |
+| `joint_owner_name` | The spouse on a joint bank or brokerage account; empty otherwise. |
+| `joint_owner_spec_id` | That spouse's household spec person ID when known. |
 | `balance` | Closing balance in dollars. Assets are positive and liabilities are negative. |
 
 ## Events
@@ -328,7 +331,7 @@ notebook table (`_repr_html_`) shows the life story; detail kinds are kept but n
 | Kind | Detail | Meaning |
 | --- | --- | --- |
 | `note` |  | Free-text event (what Event(message) creates); the engine's untyped messages. |
-| `life_event_fired` |  | A scheduled LifeEvent fired (details: stage; the record also has name and scheduled_year). |
+| `life_event_fired` |  | A scheduled LifeEvent fired (details: stage, and scheduled_day when the event has a day; the record also has name, scheduled_year and scheduled_month). |
 | `retired` |  | A job ended (retirement, a layoff, death). |
 | `retirement_age` |  | A person reached the federal retirement age (59.5). |
 | `married` |  | Two people married (details: spouse). |
@@ -358,3 +361,5 @@ notebook table (`_repr_html_`) shows the life story; detail kinds are kept but n
 | `canadian_pension_paid` |  | Dated CPP or OAS payment, including gross, withheld and net CAD amounts. |
 | `registered_withdrawal` |  | Dated RRSP, RRIF or TFSA withdrawal with gross, net and withholding. |
 | `rrsp_to_rrif` |  | Direct RRSP-to-RRIF transfer without a cash distribution. |
+| `cash_reserved` |  | Bank cash was earmarked until a release date (amount: cash earmarked, which is less than requested when the funding bank's cash after the year's unpaid tax falls short; details: date, requested, available, tax_holdback, release_on). |
+| `closing_shortfall` |  | A cash-funded closing lacked the bank cash its terms require, so the purchase closed on the required down payment through the payment waterfall (amount: the bank cash missing; details: required, available). |

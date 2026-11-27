@@ -45,9 +45,23 @@ class CashFundingSpecTests(unittest.TestCase):
             self.assertEqual([a.balance for a in simulation.agents if isinstance(a, CashReserve)], [0])
             assert_conservation(simulation, monthly=True)
 
+    def test_late_sale_without_ontario_policy_closes_through_the_waterfall(self):
+        raw = json.loads(EXAMPLE.read_text())
+        raw["events"][0]["at"]["day"] = 31
+        model, _ = self.model(raw)
+        model.step()
+        (gap,) = model.event_log.of_kind("closing_shortfall")
+        self.assertEqual(gap.amount, 30000)
+        self.assertEqual(gap.details["required"], 100000)
+        self.assertEqual(gap.details["available"], 70000)
+        self.assertEqual(model.household.items["new-home"].down_payment, 100000)
+
     def test_late_sale_exposes_cash_gap_at_closing(self):
         raw = json.loads(EXAMPLE.read_text())
         raw["events"][0]["at"]["day"] = 31
+        # Ontario forecasts treat unfunded closing terms as an infeasible plan.
+        raw["meta"]["ontario_retirement_tax"] = {"province": "ON", "settlement_dates": {2027: "2028-04-30"}}
+        raw["events"][0]["canadian_principal_residence"] = True
         model, _ = self.model(raw)
         with self.assertRaises(ClosingShortfall) as error:
             model.step()
