@@ -540,11 +540,15 @@ def _buy_home(builder: "_Builder", person, home: s.Home, cash_funding: s.HomeCas
         from ..housing.closing import ClosingShortfall, cash_funded_down_payment
         from ..model import EventKind
 
-        tax_holdback = Decimal(0)
-        if cash_funding.reserve_ontario_tax:
-            from ..tax.ontario_policy import cash_reserve_for_owner
+        # Ontario forecasts hold back the Ontario tax estimate (when requested) instead of the
+        # annualized unpaid-tax estimate.
+        tax_holdback = None
+        if builder.spec.meta.ontario_retirement_tax is not None:
+            tax_holdback = Decimal(0)
+            if cash_funding.reserve_ontario_tax:
+                from ..tax.ontario_policy import cash_reserve_for_owner
 
-            tax_holdback = cash_reserve_for_owner(person)
+                tax_holdback = cash_reserve_for_owner(person)
         price = Decimal(str(home.purchase_price))
         try:
             down = cash_funded_down_payment(

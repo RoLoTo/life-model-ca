@@ -465,6 +465,25 @@ class TestPurchaseAfterTheBuyersDeath(unittest.TestCase):
                     self.assertTrue(any("home purchase skipped" in n for n in notes), notes)
                     self.assertTrue(any("home sale skipped" in n for n in notes), notes)
 
+    def test_canadian_home_events_name_their_home_for_skipped_purchases(self):
+        from ..spec import schema as s
+        from ..spec.extract import _home_target
+
+        valuation = s.HomeValuationEvent.model_validate(
+            {
+                "action": "record_home_valuation",
+                "person": "a",
+                "at": {"year": 2027, "month": 6, "day": 1},
+                "home": "new_home",
+                "market_value": 900000,
+            }
+        )
+        conversion = s.ConvertHomeToOntarioRentalEvent.model_construct(
+            action="convert_home_to_ontario_rental", home="new_home"
+        )
+        self.assertEqual(_home_target(valuation), "new_home")
+        self.assertEqual(_home_target(conversion), "new_home")
+
     def test_snapshot_after_a_skipped_purchase_drops_events_on_that_home(self):
         from ..spec import validate_spec
         from ..spec.validate import errors

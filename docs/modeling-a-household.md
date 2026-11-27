@@ -153,7 +153,9 @@ buyer's death is skipped, and later events on that home skip too.
 
 With the Ontario return policy, both are required instead. A closing the bank can't cover reports
 `ClosingShortfall`, and a `reserve_cash` earmark takes its full amount (`pool_cash` tops the funding
-bank up from the owner's other banks) or reports an infeasible funding plan.
+bank up from the owner's other banks) or reports an infeasible funding plan. The optional down
+payment share then holds back only the Ontario tax estimate requested with `reserve_ontario_tax`,
+not the annualized unpaid-tax estimate.
 
 Two rules matter most. **Never invent a value**: a missing balance or rate is a question for the
 person, or a labeled assumption, never a plausible-looking number. Behavioral inputs that

@@ -83,19 +83,20 @@ def cash_funded_down_payment(
     mortgage_limit: Decimal | float,
     down_payment_fraction: Decimal | float = Decimal(1),
     extra_down_payment: Decimal | float = Decimal(0),
-    tax_holdback: Decimal | float = Decimal(0),
+    tax_holdback: Decimal | float | None = None,
 ) -> Decimal:
     """Calculate a closing down payment from bank cash without moving balances or creating a loan.
 
     The required down payment (the minimum, or what the mortgage limit leaves) may use all bank cash
     above the closing costs and floor. The optional share above it (``down_payment_fraction`` and
     ``extra_down_payment``) comes only from cash left after the year's unpaid tax, so an optional
-    payment doesn't leave that tax to forced sales.
+    payment doesn't leave that tax to forced sales. A supplied ``tax_holdback`` is that unpaid tax
+    instead: it is kept back from all bank cash, and the optional share may use what remains.
     """
     price = _money(price, "price")
     costs = _money(closing_costs, "closing_costs")
     retained = _money(cash_floor, "cash_floor")
-    holdback = _money(tax_holdback, "tax_holdback")
+    holdback = Decimal(0) if tax_holdback is None else _money(tax_holdback, "tax_holdback")
     minimum = _money(minimum_down_payment, "minimum_down_payment")
     limit = _money(mortgage_limit, "mortgage_limit")
     extra = _money(extra_down_payment, "extra_down_payment")
@@ -109,6 +110,8 @@ def cash_funded_down_payment(
     required = max(minimum, price - limit)
     if available < required:
         raise ClosingShortfall(required - available, required=required, available=available)
-    optional = max(Decimal(0), min(available, _bank_cash_after_tax(owner) - costs - retained))
+    optional = available
+    if tax_holdback is None:
+        optional = max(Decimal(0), min(available, _bank_cash_after_tax(owner) - costs - retained))
     preferred = min(optional, (optional * fraction + extra).quantize(_CENT, rounding=ROUND_DOWN))
     return min(price, max(required, preferred))

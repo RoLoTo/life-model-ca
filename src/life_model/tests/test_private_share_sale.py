@@ -92,14 +92,13 @@ class PrivateShareSaleTests(unittest.TestCase):
             [(row["amount"], row["month"]) for row in ledger if row["cause"] == "Settle private share sale sale"],
             [(53820, 1)],
         )
-        # The optional down payment above the minimum leaves the unpaid 2026 return (118.72) in the bank.
         self.assertEqual(
             [
                 row["amount"]
                 for row in ledger
                 if row["cause"] == "purchase of Synthetic home" and row["kind"] == "borrow"
             ],
-            [279298.72],
+            [279180],
         )
         while not model.is_finished:
             model.step()
@@ -131,7 +130,7 @@ class PrivateShareSaleTests(unittest.TestCase):
             ledger = current.ledger.to_records()
             receipts = [r for r in ledger if r["cause"] == "Settle private share sale sale"]
             self.assertEqual([r["amount"] for r in receipts], [53820])
-            self.assertEqual([r["amount"] for r in ledger if r["kind"] == "borrow"], [279298.72])
+            self.assertEqual([r["amount"] for r in ledger if r["kind"] == "borrow"], [279180])
 
     def _usd_settlement_scenario(self, *, conversion_fx, settlement_fx=None, fees="1000"):
         spec = scenario()

@@ -1545,7 +1545,13 @@ class _Extractor:
 def _home_target(event) -> str | None:
     """The home id an event acts on (a refinance's ``debt`` when it names a home), else None."""
     if isinstance(
-        event, s.SellHomeEvent | s.MortgageRenewalEvent | s.MortgageMaturityEvent | s.MortgagePrepaymentEvent
+        event,
+        s.SellHomeEvent
+        | s.MortgageRenewalEvent
+        | s.MortgageMaturityEvent
+        | s.MortgagePrepaymentEvent
+        | s.HomeValuationEvent
+        | s.ConvertHomeToOntarioRentalEvent,
     ):
         return event.home
     if isinstance(event, s.RefinanceEvent):
