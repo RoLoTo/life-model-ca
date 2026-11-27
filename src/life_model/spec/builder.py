@@ -750,6 +750,8 @@ class _Builder:
                             if lot.acquired_month is not None
                             else lot.acquired_year
                         ),
+                        security=lot.security,
+                        units=lot.units,
                     )
                     for lot in account.lots
                 ]

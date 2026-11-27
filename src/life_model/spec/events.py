@@ -1077,23 +1077,26 @@ def _sell_brokerage(builder: "_Builder", person, event: s.SellBrokerageEvent) ->
         raise ValueError("Brokerage account must be open and owned by the seller")
     if not isinstance(bank, BankAccount) or bank.owner is not person:
         raise ValueError("Destination bank account must be open and owned by the seller")
-    amount = account.balance if event.amount is None else float(event.amount)
+    available = account.balance_of(event.security)
+    amount = available if event.amount is None else float(event.amount)
     if event.cap_to_balance:
-        amount = min(amount, account.balance)
-    elif account.balance + 1e-6 < amount:
-        raise ValueError(f"Insufficient balance in {event.account!r} for brokerage sale on {event.effective_date()}")
+        amount = min(amount, available)
+    elif available + 1e-6 < amount:
+        target = f"{event.account!r} ({event.security})" if event.security else repr(event.account)
+        raise ValueError(f"Insufficient balance in {target} for brokerage sale on {event.effective_date()}")
     if amount <= 0:
         return
-    proceeds = account.withdraw(amount, lot_order=event.lot_order)
+    proceeds = account.withdraw(amount, lot_order=event.lot_order, security=event.security)
     if proceeds <= 0:
         return
     bank.deposit(proceeds)
+    label = f"Brokerage sale ({event.security})" if event.security else f"Brokerage sale ({event.lot_order})"
     builder.model.ledger.post(
         proceeds,
         FlowKind.TRANSFER,
         from_account=account,
         to_account=bank,
-        cause=f"Brokerage sale ({event.lot_order}) on {event.effective_date()}",
+        cause=f"{label} on {event.effective_date()}",
         agent=person,
     )
 

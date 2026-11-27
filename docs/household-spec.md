@@ -526,6 +526,8 @@ One brokerage tax lot.
 | `cost_basis` | number | USD | **required** |  | Cost basis. |
 | `acquired_year` | integer (optional) | year | — |  | Year acquired (long-term once held a year). Defaults to the start year. |
 | `acquired_month` | integer (optional) |  | — |  | Month acquired (defaults to January of an earlier year, else the first simulated month). |
+| `security` | string (optional) |  | — |  | Optional security identifier for Canadian identical-property pooled ACB across taxable accounts. |
+| `units` | number (optional) |  | — |  | Unit or share count held in this lot (required when security is set with positive value). |
 
 ## Job401k
 
@@ -1727,9 +1729,10 @@ Sell from a named brokerage account into one of the owner's bank accounts on a c
 | `action` | `"sell_brokerage"` |  | **required** |  |  |
 | `account` | string |  | **required** |  | Id of the owner's brokerage account to sell from. |
 | `bank` | string |  | **required** |  | Id of the owner's bank account that receives the proceeds. |
-| `amount` | Decimal (optional) | CAD | — |  | Proceeds to sell. Omit to liquidate the entire account. |
-| `cap_to_balance` | boolean |  | `False` |  | Sell the remaining brokerage balance when it is smaller than amount. |
-| `lot_order` | `"fifo"` \\| `"lifo"` \\| `"highest_basis"` \\| `"lowest_basis"` \\| `"average_cost"` |  | `"fifo"` |  | Lot consumption rule: 'fifo', 'lifo', 'highest_basis', 'lowest_basis', or 'average_cost' (pro-rata Canadian ACB pooling). |
+| `security` | string (optional) |  | — |  | Optional security identifier within the brokerage account to sell. Omit to sell across the account. |
+| `amount` | Decimal (optional) | CAD | — |  | Proceeds to sell. Omit to liquidate the entire account (or all of security when specified). |
+| `cap_to_balance` | boolean |  | `False` |  | Sell the remaining balance when it is smaller than amount. |
+| `lot_order` | `"fifo"` \\| `"lifo"` \\| `"highest_basis"` \\| `"lowest_basis"` \\| `"average_cost"` |  | `"fifo"` |  | US lot consumption rule ('fifo', 'lifo', 'highest_basis', 'lowest_basis', or 'average_cost'). Under OntarioRetirementPolicy, tax basis uses taxpayer-wide pooled ACB independent of lot_order. |
 
 ## OntarioTaxStatementEvent
 

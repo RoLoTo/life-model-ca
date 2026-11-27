@@ -30,6 +30,10 @@ class TaxLot:
     acquired_year: int
     #: Month (1-12) the lot was acquired. A lot held 12 months or more is long-term.
     acquired_month: int = 1
+    #: Optional security identifier for identical-property tax pooling across taxable accounts.
+    security: str | None = None
+    #: Optional unit/share count held in this lot (required when ``security`` is set with positive value).
+    units: float | None = None
 
     @property
     def gain(self) -> float:
@@ -43,17 +47,26 @@ class TaxLot:
 
 @dataclass(frozen=True)
 class Lot:
-    """An opening tax lot from a brokerage statement: its market value, its cost basis and
+    """An opening tax lot from a brokerage statement: its market value, its cost basis,
     when it was acquired (``"YYYY-MM"``, a year meaning January of it, or None for the first simulated
-    month). Pass a list of these as ``BrokerageAccount(lots=)``."""
+    month), and optional ``security`` identity and ``units`` count. Pass a list of these as
+    ``BrokerageAccount(lots=)``."""
 
     value: float
     cost_basis: float
     acquired: "int | str | None" = None
+    security: str | None = None
+    units: float | None = None
 
     def __post_init__(self):
         if self.value < 0 or self.cost_basis < 0:
             raise ValueError("Lot value and cost_basis must be non-negative")
+        if self.security is not None and not self.security.strip():
+            raise ValueError("Lot security must be a non-empty string when provided")
+        if self.units is not None and self.units < 0:
+            raise ValueError("Lot units must be non-negative")
+        if self.security is not None and self.value > 0 and (self.units is None or self.units <= 0):
+            raise ValueError("Lot with security and positive value requires positive units")
 
 
 def _acquired(acquired: "int | str | None") -> "tuple[int | None, int | None]":
@@ -149,33 +162,89 @@ class BrokerageAccount(Investment):
         # Basis is tracked per lot; an opening balance is treated as freshly purchased at cost.
         self.lots: list[TaxLot] = []
         if lots is not None:
-            for value, basis, year, month in opening:
+            for value, basis, year, month, security, units in opening:
                 if value > 0:
-                    self.lots.append(self._lot(value, basis, year, month))
+                    self.lots.append(self._lot(value, basis, year, month, security=security, units=units))
         elif balance > 0:
             self.lots.append(self._lot(balance, balance))
         self.joint_owner = joint_owner
         self.model.registries.brokerage_accounts.register(owner, self)
 
     @staticmethod
-    def _opening_lot(lot) -> "tuple[float, float, int | None, int | None]":
+    def _opening_lot(lot) -> "tuple[float, float, int | None, int | None, str | None, float | None]":
         if isinstance(lot, TaxLot):
-            return lot.value, lot.cost_basis, lot.acquired_year, lot.acquired_month
+            return lot.value, lot.cost_basis, lot.acquired_year, lot.acquired_month, lot.security, lot.units
         if isinstance(lot, dict):
             lot = Lot(**lot)
         elif isinstance(lot, tuple):
             lot = Lot(*lot)
         year, month = _acquired(lot.acquired)
-        return lot.value, lot.cost_basis, year, month
+        return lot.value, lot.cost_basis, year, month, lot.security, lot.units
 
-    def _lot(self, value: float, cost_basis: float, acquired_year: int | None = None, acquired_month=None) -> TaxLot:
+    def _lot(
+        self,
+        value: float,
+        cost_basis: float,
+        acquired_year: int | None = None,
+        acquired_month=None,
+        *,
+        security: str | None = None,
+        units: float | None = None,
+    ) -> TaxLot:
         """A lot acquired now (or in ``acquired_year``: in ``acquired_month``, else January of an
         earlier year / the current month of this year)."""
         if acquired_year is None:
             acquired_year = self.model.year
         if acquired_month is None:
             acquired_month = self.model.month if acquired_year == self.model.year else 1
-        return TaxLot(value=value, cost_basis=cost_basis, acquired_year=acquired_year, acquired_month=acquired_month)
+        return TaxLot(
+            value=value,
+            cost_basis=cost_basis,
+            acquired_year=acquired_year,
+            acquired_month=acquired_month,
+            security=security,
+            units=units,
+        )
+
+    def _uses_canadian_pooled_acb(self) -> bool:
+        """True when the owner files under Canadian identical-property ACB pooling rules."""
+        from ..tax.ontario_policy import OntarioRetirementPolicy
+
+        policy = getattr(self.model, "income_tax_policy", None)
+        return isinstance(policy, OntarioRetirementPolicy) and policy.owner is self.owner
+
+    def _canadian_security_pool(self, security: str) -> tuple[float, float]:
+        """Return taxpayer-wide ``(total_units, total_acb)`` across all taxable brokerage accounts."""
+        total_units = 0.0
+        total_acb = 0.0
+        for acct in self.owner.brokerage_accounts:
+            for lot in acct.lots:
+                if lot.security == security and lot.value > 0:
+                    if lot.units is None or lot.units <= 0:
+                        raise ValueError(f"Taxable lot for security {security!r} is missing positive units")
+                    total_units += lot.units
+                    total_acb += lot.cost_basis
+        return total_units, total_acb
+
+    def _rebalance_canadian_security_pool(self, security: str, remaining_units: float, remaining_acb: float) -> None:
+        """Align remaining per-lot tax basis across the taxpayer's accounts to the pooled ACB per unit."""
+        if remaining_units <= 1e-12:
+            return
+        acb_per_unit = remaining_acb / remaining_units
+        for acct in self.owner.brokerage_accounts:
+            for lot in acct.lots:
+                if lot.security == security and lot.value > 1e-9 and lot.units is not None and lot.units > 0:
+                    lot.cost_basis = lot.units * acb_per_unit
+
+    def balance_of(self, security: str | None = None) -> float:
+        """Current market value of the whole account, or of one ``security`` within it."""
+        if security is None:
+            return self.balance
+        return sum(lot.value for lot in self.lots if lot.security == security)
+
+    def units_of(self, security: str) -> float:
+        """Total units of ``security`` held in this account."""
+        return sum(lot.units or 0.0 for lot in self.lots if lot.security == security and lot.value > 0)
 
     def _is_long_term(self, lot: TaxLot) -> bool:
         return lot.months_held(self.model.year, self.model.month) >= 12
@@ -235,7 +304,7 @@ class BrokerageAccount(Investment):
             )
             self.add_income(IncomeType.QUALIFIED_DIVIDEND, dividend, source=dividend_source)
             if self.reinvest_dividends:
-                self.deposit(dividend)
+                self._reinvest_dividend(dividend)
                 self.model.ledger.post(
                     dividend, FlowKind.DIVIDEND, to_account=self, source="dividends (reinvested)", agent=self.person
                 )
@@ -255,7 +324,29 @@ class BrokerageAccount(Investment):
         for lot in self.lots:
             lot.value += amount * (lot.value / total)
 
-    def deposit(self, amount: float) -> bool:
+    def _reinvest_dividend(self, dividend: float) -> None:
+        """Reinvest ``dividend`` as full-basis lot(s), preserving security identity and unit prices."""
+        total_val = sum(lot.value for lot in self.lots if lot.value > 0)
+        by_security: dict[str | None, list[TaxLot]] = {}
+        for lot in self.lots:
+            if lot.value > 0:
+                by_security.setdefault(lot.security, []).append(lot)
+        if total_val <= 0 or (len(by_security) == 1 and None in by_security):
+            self.deposit(dividend)
+            return
+        for sec, sec_lots in by_security.items():
+            sec_val = sum(lot.value for lot in sec_lots)
+            share = dividend * (sec_val / total_val)
+            if share <= 0:
+                continue
+            if sec is None:
+                self.deposit(share)
+            else:
+                sec_units = sum(lot.units or 0.0 for lot in sec_lots)
+                unit_price = sec_val / sec_units if sec_units > 0 else 1.0
+                self.deposit(share, security=sec, units=share / unit_price)
+
+    def deposit(self, amount: float, *, security: str | None = None, units: float | None = None) -> bool:
         """Credit ``amount`` to the account as a new full-basis lot acquired this month.
 
         Every credit path must go through here: a bare ``balance +=`` would silently drive basis
@@ -265,8 +356,10 @@ class BrokerageAccount(Investment):
             raise ValueError("Deposit amount cannot be negative")
         if amount == 0:
             return True
+        if security is not None and (units is None or units <= 0):
+            raise ValueError("Depositing a named security requires positive units")
         self.balance += amount
-        self.lots.append(self._lot(amount, amount))
+        self.lots.append(self._lot(amount, amount, security=security, units=units))
         return True
 
     def deposit_with_basis(
@@ -275,6 +368,9 @@ class BrokerageAccount(Investment):
         cost_basis: float,
         acquired_year: int | None = None,
         acquired_month: int | None = None,
+        *,
+        security: str | None = None,
+        units: float | None = None,
     ) -> None:
         """Credit ``amount`` as a lot with an explicit basis and acquisition date (default: now; a year
         without a month is January of an earlier year, or this month of the current one).
@@ -284,33 +380,36 @@ class BrokerageAccount(Investment):
         """
         if amount <= 0:
             return
+        if security is not None and (units is None or units <= 0):
+            raise ValueError("Depositing a named security requires positive units")
         self.balance += amount
-        self.lots.append(self._lot(amount, cost_basis, acquired_year, acquired_month))
+        self.lots.append(self._lot(amount, cost_basis, acquired_year, acquired_month, security=security, units=units))
 
-    def withdraw(self, amount: float, *, lot_order: str = "fifo") -> float:
-        """Sell ``amount`` of the account, consuming lots by ``lot_order`` and posting the realized gain.
+    def withdraw(self, amount: float, *, lot_order: str = "fifo", security: str | None = None) -> float:
+        """Sell ``amount`` of the account (or of one ``security``), posting the realized gain.
 
-        Each consumed lot's gain is classified long-term when the lot has been held 12 months or
-        more and short-term otherwise, then posted to the owner's income ledger so the tax unit
-        settles it at year end.
+        Under Canadian tax (``OntarioRetirementPolicy``), tax cost basis is always computed from
+        the taxpayer-wide pooled ACB of each identical security, independent of ``lot_order``.
+        Under US tax, lots are consumed by ``lot_order`` and classified long- or short-term.
 
         Returns:
             float: Amount actually withdrawn.
         """
-        withdrawn, long_term_gain, short_term_gain = self.sell(amount, lot_order=lot_order)
+        withdrawn, long_term_gain, short_term_gain = self.sell(amount, lot_order=lot_order, security=security)
         if long_term_gain != 0:
             self.add_income(IncomeType.LONG_TERM_CAPITAL_GAIN, long_term_gain, source="brokerage_sale")
         if short_term_gain != 0:
             self.add_income(IncomeType.SHORT_TERM_CAPITAL_GAIN, short_term_gain, source="brokerage_sale")
         return withdrawn
 
-    def sell(self, amount: float, *, lot_order: str = "fifo") -> tuple[float, float, float]:
+    def sell(
+        self, amount: float, *, lot_order: str = "fifo", security: str | None = None
+    ) -> tuple[float, float, float]:
         """Consume lots for ``amount`` without posting anything to the income ledger.
 
-        ``lot_order`` may be ``"fifo"`` (oldest first), ``"lifo"`` (newest first),
-        ``"highest_basis"`` (highest cost-basis-to-value ratio first), ``"lowest_basis"``
-        (lowest basis-to-value ratio first), or ``"average_cost"`` (pro-rata across all lots,
-        matching Canadian identical-property ACB pooling).
+        When ``security`` is provided, only lots of that security in this account are sold.
+        Under ``OntarioRetirementPolicy``, capital-gain basis uses CRA identical-property pooled
+        ACB across all of the owner's taxable brokerage accounts (independent of ``lot_order``).
 
         Returns:
             tuple: ``(withdrawn, long_term_gain, short_term_gain)``. Gains may be negative when
@@ -318,19 +417,23 @@ class BrokerageAccount(Investment):
         """
         if lot_order not in ("fifo", "lifo", "highest_basis", "lowest_basis", "average_cost"):
             raise ValueError(f"Unsupported lot_order: {lot_order!r}")
-        if amount < 0:
-            return 0.0, 0.0, 0.0  # Cannot withdraw negative amounts
-        actual_withdrawal = min(amount, self.balance)
-        total_before = sum(lot.value for lot in self.lots)
-        self.balance -= actual_withdrawal
+        if amount <= 0:
+            return 0.0, 0.0, 0.0
+        eligible = [lot for lot in self.lots if lot.value > 0 and (security is None or lot.security == security)]
+        total_eligible = sum(lot.value for lot in eligible)
+        actual_withdrawal = min(amount, total_eligible, self.balance)
+        if actual_withdrawal <= 0 or total_eligible <= 0:
+            return 0.0, 0.0, 0.0
+        self.balance = max(0.0, self.balance - actual_withdrawal)
+
+        if self._uses_canadian_pooled_acb():
+            return self._sell_canadian_pooled_acb(eligible, actual_withdrawal)
 
         if lot_order == "average_cost":
-            if actual_withdrawal <= 0 or total_before <= 0:
-                return actual_withdrawal, 0.0, 0.0
-            fraction = min(1.0, actual_withdrawal / total_before)
+            fraction = min(1.0, actual_withdrawal / total_eligible)
             long_term_gain = 0.0
             short_term_gain = 0.0
-            for lot in self.lots:
+            for lot in eligible:
                 take = lot.value * fraction
                 basis_used = lot.cost_basis * fraction
                 gain = take - basis_used
@@ -340,6 +443,8 @@ class BrokerageAccount(Investment):
                     short_term_gain += gain
                 lot.value -= take
                 lot.cost_basis -= basis_used
+                if lot.units is not None:
+                    lot.units -= lot.units * fraction
             self.lots = [lot for lot in self.lots if lot.value > 1e-9]
             return actual_withdrawal, long_term_gain, short_term_gain
 
@@ -347,30 +452,22 @@ class BrokerageAccount(Investment):
         long_term_gain = 0.0
         short_term_gain = 0.0
         if lot_order == "fifo":
-            indices = list(range(len(self.lots)))
+            ordered = list(eligible)
         elif lot_order == "lifo":
-            indices = list(range(len(self.lots) - 1, -1, -1))
+            ordered = list(reversed(eligible))
         elif lot_order == "highest_basis":
-            indices = sorted(
-                range(len(self.lots)),
-                key=lambda i: -(self.lots[i].cost_basis / self.lots[i].value if self.lots[i].value > 0 else 1.0),
-            )
+            ordered = sorted(eligible, key=lambda lt: -(lt.cost_basis / lt.value if lt.value > 0 else 1.0))
         else:
-            indices = sorted(
-                range(len(self.lots)),
-                key=lambda i: self.lots[i].cost_basis / self.lots[i].value if self.lots[i].value > 0 else 1.0,
-            )
+            ordered = sorted(eligible, key=lambda lt: lt.cost_basis / lt.value if lt.value > 0 else 1.0)
 
-        for idx in indices:
+        for lot in ordered:
             if remaining <= 0:
                 break
-            lot = self.lots[idx]
             if lot.value <= 0:
                 continue
             take = min(remaining, lot.value)
-            # Basis is consumed in the same proportion as value, so a partial sale of a lot
-            # realizes a proportional slice of its gain and leaves the rest embedded.
-            basis_used = lot.cost_basis * (take / lot.value) if lot.value > 0 else lot.cost_basis
+            frac = take / lot.value if lot.value > 0 else 1.0
+            basis_used = lot.cost_basis * frac
             gain = take - basis_used
             if self._is_long_term(lot):
                 long_term_gain += gain
@@ -378,9 +475,68 @@ class BrokerageAccount(Investment):
                 short_term_gain += gain
             lot.value -= take
             lot.cost_basis -= basis_used
+            if lot.units is not None:
+                lot.units -= lot.units * frac
             remaining -= take
         self.lots = [lot for lot in self.lots if lot.value > 1e-9]
 
+        return actual_withdrawal, long_term_gain, short_term_gain
+
+    def _sell_canadian_pooled_acb(self, eligible: list[TaxLot], actual_withdrawal: float) -> tuple[float, float, float]:
+        """Sell ``actual_withdrawal`` across ``eligible`` lots using CRA identical-property pooled ACB."""
+        total_eligible = sum(lot.value for lot in eligible)
+        fraction = min(1.0, actual_withdrawal / total_eligible)
+        long_term_gain = 0.0
+        short_term_gain = 0.0
+
+        # Group eligible lots by security (None groups unnamed lots within this account).
+        by_security: dict[str | None, list[TaxLot]] = {}
+        for lot in eligible:
+            by_security.setdefault(lot.security, []).append(lot)
+
+        for sec, sec_lots in by_security.items():
+            if sec is None:
+                sec_value = sum(lot.value for lot in sec_lots)
+                sec_acb = sum(lot.cost_basis for lot in sec_lots)
+                sold_val = sec_value * fraction
+                basis_used = sec_acb * fraction
+                gain = sold_val - basis_used
+                if all(self._is_long_term(lot) for lot in sec_lots):
+                    long_term_gain += gain
+                else:
+                    short_term_gain += gain
+                for lot in sec_lots:
+                    lot.value -= lot.value * fraction
+                    lot.cost_basis -= lot.cost_basis * fraction
+                    if lot.units is not None:
+                        lot.units -= lot.units * fraction
+                continue
+
+            pool_units, pool_acb = self._canadian_security_pool(sec)
+            if pool_units <= 0:
+                raise ValueError(f"Cannot compute pooled ACB for security {sec!r} with zero units")
+            acb_per_unit = pool_acb / pool_units
+            total_units_sold = 0.0
+            total_proceeds = 0.0
+            for lot in sec_lots:
+                take = lot.value * fraction
+                units_sold = (lot.units or 0.0) * fraction
+                lot.value -= take
+                if lot.units is not None:
+                    lot.units -= units_sold
+                total_units_sold += units_sold
+                total_proceeds += take
+            basis_used = total_units_sold * acb_per_unit
+            gain = total_proceeds - basis_used
+            if all(self._is_long_term(lot) for lot in sec_lots):
+                long_term_gain += gain
+            else:
+                short_term_gain += gain
+            remaining_units = max(0.0, pool_units - total_units_sold)
+            remaining_acb = max(0.0, pool_acb - basis_used)
+            self._rebalance_canadian_security_pool(sec, remaining_units, remaining_acb)
+
+        self.lots = [lot for lot in self.lots if lot.value > 1e-9]
         return actual_withdrawal, long_term_gain, short_term_gain
 
     def transfer_long_term_in_kind(self, amount: float) -> float:
@@ -407,20 +563,47 @@ class BrokerageAccount(Investment):
         self.balance -= given
         return given
 
-    def preview_gain(self, amount: float) -> tuple[float, float]:
+    def preview_gain(self, amount: float, *, security: str | None = None) -> tuple[float, float]:
         """Preview the gains selling ``amount`` would realize, WITHOUT mutating any lots.
 
-        Walks the same FIFO path as :meth:`sell` but consumes nothing, returning
-        ``(long_term_gain, short_term_gain)``. The settlement solver uses this to size a
-        brokerage draw — and the capital-gains tax that draw itself triggers — before committing
-        the sale, so the account is sold exactly once.
+        Mirrors :meth:`sell` (taxpayer-wide pooled ACB under ``OntarioRetirementPolicy``, FIFO
+        otherwise) so the settlement solver sizes capital-gains tax before committing the sale.
         """
         if amount <= 0:
             return 0.0, 0.0
-        remaining = min(amount, self.balance)
+        eligible = [lot for lot in self.lots if lot.value > 0 and (security is None or lot.security == security)]
+        total_eligible = sum(lot.value for lot in eligible)
+        actual_withdrawal = min(amount, total_eligible, self.balance)
+        if actual_withdrawal <= 0 or total_eligible <= 0:
+            return 0.0, 0.0
+        if self._uses_canadian_pooled_acb():
+            fraction = min(1.0, actual_withdrawal / total_eligible)
+            long_term_gain = 0.0
+            short_term_gain = 0.0
+            by_security: dict[str | None, list[TaxLot]] = {}
+            for lot in eligible:
+                by_security.setdefault(lot.security, []).append(lot)
+            for sec, sec_lots in by_security.items():
+                if sec is None:
+                    sec_value = sum(lot.value for lot in sec_lots)
+                    sec_acb = sum(lot.cost_basis for lot in sec_lots)
+                    gain = (sec_value - sec_acb) * fraction
+                else:
+                    pool_units, pool_acb = self._canadian_security_pool(sec)
+                    acb_per_unit = pool_acb / pool_units if pool_units > 0 else 0.0
+                    proceeds = sum(lot.value for lot in sec_lots) * fraction
+                    units_sold = sum(lot.units or 0.0 for lot in sec_lots) * fraction
+                    gain = proceeds - units_sold * acb_per_unit
+                if all(self._is_long_term(lot) for lot in sec_lots):
+                    long_term_gain += gain
+                else:
+                    short_term_gain += gain
+            return long_term_gain, short_term_gain
+
+        remaining = actual_withdrawal
         long_term_gain = 0.0
         short_term_gain = 0.0
-        for lot in self.lots:
+        for lot in eligible:
             if remaining <= 0:
                 break
             take = min(remaining, lot.value)

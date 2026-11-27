@@ -1114,6 +1114,23 @@ class TaxLot(SpecModel):
     acquired_month: Annotated[int, Field(ge=1, le=12)] | None = spec_field(
         None, description="Month acquired (defaults to January of an earlier year, else the first simulated month)."
     )
+    security: str | None = spec_field(
+        None,
+        description="Optional security identifier for Canadian identical-property pooled ACB across taxable accounts.",
+        min_length=1,
+    )
+    units: float | None = spec_field(
+        None,
+        description="Unit or share count held in this lot (required when security is set with positive value).",
+        ge=0,
+        allow_inf_nan=False,
+    )
+
+    @model_validator(mode="after")
+    def _security_requires_units(self) -> "TaxLot":
+        if self.security is not None and self.value > 0 and (self.units is None or self.units <= 0):
+            raise ValueError("a lot with 'security' and positive 'value' requires positive 'units'")
+        return self
 
 
 class BrokerageAccount(SpecModel):
@@ -4156,16 +4173,22 @@ class SellBrokerageEvent(EventBase):
     action: Literal["sell_brokerage"]
     account: Identifier = spec_field(description="Id of the owner's brokerage account to sell from.")
     bank: Identifier = spec_field(description="Id of the owner's bank account that receives the proceeds.")
+    security: str | None = spec_field(
+        None,
+        description="Optional security identifier within the brokerage account to sell. Omit to sell across the account.",
+        min_length=1,
+    )
     amount: CashAmount | None = spec_field(
-        None, description="Proceeds to sell. Omit to liquidate the entire account.", gt=0, unit="CAD"
+        None,
+        description="Proceeds to sell. Omit to liquidate the entire account (or all of security when specified).",
+        gt=0,
+        unit="CAD",
     )
-    cap_to_balance: bool = spec_field(
-        False, description="Sell the remaining brokerage balance when it is smaller than amount."
-    )
+    cap_to_balance: bool = spec_field(False, description="Sell the remaining balance when it is smaller than amount.")
     lot_order: Literal["fifo", "lifo", "highest_basis", "lowest_basis", "average_cost"] = spec_field(
         "fifo",
-        description="Lot consumption rule: 'fifo', 'lifo', 'highest_basis', 'lowest_basis', or 'average_cost' "
-        "(pro-rata Canadian ACB pooling).",
+        description="US lot consumption rule ('fifo', 'lifo', 'highest_basis', 'lowest_basis', or 'average_cost'). "
+        "Under OntarioRetirementPolicy, tax basis uses taxpayer-wide pooled ACB independent of lot_order.",
     )
 
     @model_validator(mode="after")

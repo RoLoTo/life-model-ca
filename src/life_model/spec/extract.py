@@ -837,6 +837,8 @@ class _Extractor:
                         cost_basis=lot.cost_basis,
                         acquired_year=lot.acquired_year,
                         acquired_month=self._lot_month(lot),
+                        security=lot.security,
+                        units=lot.units,
                     )
                     for lot in lots
                 ]
