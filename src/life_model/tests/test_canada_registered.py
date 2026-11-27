@@ -164,6 +164,13 @@ class CanadianRegisteredTests(unittest.TestCase):
             while not model.is_finished:
                 model.step()
 
+    def test_month_end_positions_name_registered_accounts(self):
+        from ..results import position_type
+
+        self.assertEqual(position_type("CanadianTFSA:tfsa"), "tfsa")
+        # RRSPs and RRIFs share one core class, so their lines carry its name.
+        self.assertEqual(position_type("CanadianRetirementAccount:rrsp"), "canadian_retirement_account")
+
     def test_early_canadian_withdrawal_uses_neither_us_penalty_nor_roth_rules(self):
         spec = household(start=2025, end=2025)
         record = spec["people"][0]

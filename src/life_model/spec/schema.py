@@ -1811,6 +1811,8 @@ class RRIF(CanadianRegisteredBalance):
 
 
 class TFSA(CanadianRegisteredBalance):
+    CORE_CLASS = "CanadianTFSA"
+
     kind: Literal["tfsa"]
 
 

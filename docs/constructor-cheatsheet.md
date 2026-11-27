@@ -69,6 +69,7 @@ Each spec entry, the core class the builder constructs, the fields you must give
 | Job401k (`kind: 401k`) | `Job401kAccount` | — | `pretax_balance=0.0`, `roth_balance=0.0`, `pretax_contrib_pct=0.0`, `roth_contrib_pct=0.0`, `growth_pct='economy'`, `bonus_is_plan_pay=False`, `match_vesting_years=0`, `company_match_pct=0.0`, `after_tax_contrib_pct=0.0`, `in_plan_roth_conversion=False` |
 | TraditionalIRA (`kind: traditional_ira`) | `TraditionalIRA` | — | `balance=0.0`, `growth_pct='economy'` |
 | RothIRA (`kind: roth_ira`) | `RothIRA` | — | `balance=0.0`, `growth_pct='economy'` |
+| TFSA (`kind: tfsa`) | `CanadianTFSA` | — | `balance=0.0`, `growth_pct='economy'` |
 | HealthSavingsAccount (`kind: hsa`) | `HealthSavingsAccount` | — | `coverage='individual'`, `balance=0.0`, `growth_pct='economy'` |
 | Plan529 (`kind: 529`) | `Plan529` | — | `balance=0.0`, `plan_state='NY'`, `growth_pct='economy'` |
 | InheritedPretaxAccount (`kind: inherited_pretax`) | `InheritedPretaxAccount` | `balance`, `decedent_name` | `years=10` |

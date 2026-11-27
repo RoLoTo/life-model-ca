@@ -627,6 +627,8 @@ Builds: `RothIRA`.
 
 ## TFSA
 
+Builds: `CanadianTFSA`.
+
 | Field | Type | Unit | Default | Maps to | Description |
 |---|---|---|---|---|---|
 | `id` | string (optional) |  | — |  | Optional identifier for this account, unique across the spec. Required when another entry references it (a 401k's job, an event's target, a relative event's anchor). |
